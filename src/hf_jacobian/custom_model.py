@@ -109,8 +109,8 @@ class CustomModel(nn.Module):
         self.layers = nn.ModuleList([Block(cfg) for _ in range(cfg.n_layers)])
         self.norm   = RMSNorm(cfg.d_model)
 
-    def forward(self, input_ids):
-        x = self.embed(input_ids)
+    def forward(self, input_ids=None, inputs_embeds=None):
+        x = inputs_embeds if inputs_embeds is not None else self.embed(input_ids)
         for layer in self.layers:
             x = layer(x)
         return self.norm(x)
@@ -118,19 +118,21 @@ class CustomModel(nn.Module):
 
 def extract_direct(
     model: CustomModel,
-    input_ids: torch.Tensor,
+    inputs: torch.Tensor,
     layer_idx: int,
     sublayer: str,
 ):
     """
     Extract hidden state and Jacobian stats by calling AttnResidual / FFNResidual
     directly on a leaf — no hooks, no dispatch.
+
+    inputs: int token ids (1, seq) or float latent representations (1, seq, d).
     Returns (hidden (seq, d), stats dict).
     """
     layer = model.layers[layer_idx]
 
     with torch.no_grad():
-        x = model.embed(input_ids)
+        x = inputs if inputs.is_floating_point() else model.embed(inputs)
         for i in range(layer_idx):
             x = model.layers[i](x)
         if sublayer == "ffn":

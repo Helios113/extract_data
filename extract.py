@@ -45,8 +45,8 @@ def parse_args():
     return p.parse_args()
 
 
-def extract_target(model, input_ids, layer_idx, sublayer):
-    x_leaf, output = _capture(model, input_ids, layer_idx, sublayer)
+def extract_target(model, inputs, layer_idx, sublayer):
+    x_leaf, output = _capture(model, inputs, layer_idx, sublayer)
     jac    = _block_jac_from_graph(output, x_leaf)
     stats  = hj.jacobian_stats(jac)
     hidden = x_leaf.detach().cpu()[0]   # (seq, d)

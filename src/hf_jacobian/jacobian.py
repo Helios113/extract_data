@@ -138,10 +138,13 @@ def print_model(model):
         print(f"  .{name:<30} {type(mod).__name__}")
 
 
-def _capture(model, input_ids, layer_idx, sublayer):
+def _capture(model, inputs, layer_idx, sublayer):
     """
     Single forward pass: returns (x_leaf, output) where output = x_leaf + sub(ln(x_leaf)).
     x_leaf is the detached leaf at the residual input; output retains the graph.
+
+    inputs: int token ids (1, seq) or float latent representations (1, seq, d).
+    Float inputs are passed as inputs_embeds=, bypassing the model's embedding layer.
 
     Injection mechanism differs by sublayer:
       "attn": x is the layer input → pre-hook injects x_leaf before any op runs.
@@ -180,7 +183,10 @@ def _capture(model, input_ids, layer_idx, sublayer):
     handles.append(sub.register_forward_hook(set_capture))
 
     with intercept:
-        model(input_ids)
+        if inputs.is_floating_point():
+            model(inputs_embeds=inputs)
+        else:
+            model(inputs)
 
     for h in handles:
         h.remove()
@@ -193,16 +199,18 @@ def _capture(model, input_ids, layer_idx, sublayer):
 
 def position_jacobians(
     model,
-    input_ids: torch.Tensor,
+    inputs: torch.Tensor,
     layer_idx: int,
     sublayer: str,
 ) -> torch.Tensor:
     """
     Per-position (d, d) Jacobian: how each hidden dim at position p affects
     every hidden dim at position p in the output.
+
+    inputs: int token ids (1, seq) or float latent representations (1, seq, d).
     Returns (seq, d, d).
     """
-    x, out = _capture(model, input_ids, layer_idx, sublayer)
+    x, out = _capture(model, inputs, layer_idx, sublayer)
     return _block_jac_from_graph(out, x)
 
 
