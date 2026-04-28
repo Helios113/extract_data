@@ -46,10 +46,11 @@ def parse_args():
 
 
 def extract_target(model, inputs, layer_idx, sublayer):
+    """inputs: (B, seq) or (B, seq, d). Returns hidden (B, seq, d), stats (B, seq)."""
     x_leaf, output = _capture(model, inputs, layer_idx, sublayer)
     jac    = _block_jac_from_graph(output, x_leaf)
     stats  = hj.jacobian_stats(jac)
-    hidden = x_leaf.detach().cpu()[0]   # (seq, d)
+    hidden = x_leaf.detach().cpu()   # (B, seq, d)
     return hidden, {k: v.cpu() for k, v in stats.items()}
 
 
@@ -89,9 +90,9 @@ def main():
                     continue
 
                 grp = f.require_group(key)
-                grp.create_dataset("hidden_state", data=hidden.numpy())
-                grp.create_dataset("det",          data=stats["det"].numpy())
-                grp.create_dataset("sigma_ratio",  data=stats["sigma_ratio"].numpy())
+                grp.create_dataset("hidden_state", data=hidden[0].numpy())
+                grp.create_dataset("det",          data=stats["det"][0].numpy())
+                grp.create_dataset("sigma_ratio",  data=stats["sigma_ratio"][0].numpy())
 
     print(f"\nSaved → {args.output!r}")
 

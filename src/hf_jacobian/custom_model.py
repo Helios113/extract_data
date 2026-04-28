@@ -142,4 +142,4 @@ def extract_direct(
     out    = layer.attn(x_leaf) if sublayer == "attn" else layer.ffn(x_leaf)
     jac    = _block_jac_from_graph(out, x_leaf)
     stats  = jacobian_stats(jac)
-    return x_leaf.detach().cpu()[0], {k: v.cpu() for k, v in stats.items()}
+    return x_leaf.detach().cpu(), {k: v.cpu() for k, v in stats.items()}

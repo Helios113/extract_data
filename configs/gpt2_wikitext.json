@@ -1,0 +1,15 @@
+{
+  "model": "gpt2",
+  "device": "cpu",
+  "dataset": {
+    "name": "wikitext",
+    "config": "wikitext-2-raw-v1",
+    "split": "train",
+    "text_column": "text"
+  },
+  "sampling": {
+    "n_samples": 8,
+    "seq_len": 64,
+    "batch_size": 4
+  }
+}

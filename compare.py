@@ -27,10 +27,10 @@ for layer_idx in range(cfg.n_layers):
 
         h_hook, s_hook = extract_target(model, ids, layer_idx, sublayer)
         h_dir,  s_dir  = extract_direct(model, ids, layer_idx, sublayer)
-
-        hidden_diff = (h_hook - h_dir).abs().max().item()
-        det_diff    = (s_hook["det"]         - s_dir["det"]).abs().max().item()
-        ratio_diff  = (s_hook["sigma_ratio"] - s_dir["sigma_ratio"]).abs().max().item()
+        # both return (B=1, seq, d) / (B=1, seq) — compare at batch index 0
+        hidden_diff = (h_hook[0] - h_dir[0]).abs().max().item()
+        det_diff    = (s_hook["det"][0]         - s_dir["det"][0]).abs().max().item()
+        ratio_diff  = (s_hook["sigma_ratio"][0] - s_dir["sigma_ratio"][0]).abs().max().item()
 
         ok = hidden_diff < 1e-5 and det_diff < 1e-5 and ratio_diff < 1e-5
         all_pass = all_pass and ok

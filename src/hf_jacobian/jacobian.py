@@ -110,23 +110,25 @@ class _InSituJac(TorchDispatchMode):
 
 def _block_jac_from_graph(output, x_leaf):
     """
-    Per-position (d, d) Jacobian of output_p w.r.t. input_p.
+    Per-position (d, d) Jacobian of output_p w.r.t. input_p, batched.
 
-    Same seq*d backward passes as the diagonal, but each pass keeps the full
-    position-p slice of the gradient instead of just the diagonal element.
+    Uses seq*d backward passes regardless of batch size B: summing output[b,p,i]
+    over b is valid because batch items are independent, so the gradient
+    decomposes as grad(Σ_b output[b,p,i], x_leaf)[b,p,:] = d(output[b,p,i])/d(x_leaf[b,p,:]).
 
-    output : (1, seq, d)
-    x_leaf : (1, seq, d)
-    returns: (seq, d, d)  — jac[p, i, j] = d(output[0,p,i]) / d(x_leaf[0,p,j])
+    output : (B, seq, d)
+    x_leaf : (B, seq, d)
+    returns: (B, seq, d, d)  — jac[b, p, i, j] = d(output[b,p,i]) / d(x_leaf[b,p,j])
     """
-    seq, d = output.shape[1], output.shape[2]
-    n      = seq * d
-    jac    = torch.zeros(seq, d, d, device=x_leaf.device, dtype=x_leaf.dtype)
-    out_flat = output.reshape(-1)
+    B, seq, d = output.shape
+    n         = seq * d
+    jac       = torch.zeros(B, seq, d, d, device=x_leaf.device, dtype=x_leaf.dtype)
     for flat_idx in range(n):
         p, i = divmod(flat_idx, d)
-        (g,) = torch.autograd.grad(out_flat[flat_idx], x_leaf, retain_graph=(flat_idx < n - 1))
-        jac[p, i] = g[0, p]   # d(output[0,p,i]) / d(x_leaf[0,p,:])
+        (g,) = torch.autograd.grad(
+            output[:, p, i].sum(), x_leaf, retain_graph=(flat_idx < n - 1)
+        )  # g: (B, seq, d)
+        jac[:, p, i, :] = g[:, p, :]
     return jac
 
 
@@ -207,8 +209,8 @@ def position_jacobians(
     Per-position (d, d) Jacobian: how each hidden dim at position p affects
     every hidden dim at position p in the output.
 
-    inputs: int token ids (1, seq) or float latent representations (1, seq, d).
-    Returns (seq, d, d).
+    inputs: int token ids (B, seq) or float latent representations (B, seq, d).
+    Returns (B, seq, d, d).
     """
     x, out = _capture(model, inputs, layer_idx, sublayer)
     return _block_jac_from_graph(out, x)
@@ -216,14 +218,14 @@ def position_jacobians(
 
 def jacobian_stats(jac: torch.Tensor) -> dict:
     """
-    jac: (seq, d, d) stack of square Jacobians, one per position.
+    jac: (B, seq, d, d) batched stack of square Jacobians.
     Returns dict with:
-      det        (seq,) — determinant of each J
-      sigma_ratio (seq,) — max(σ) / min(σ), i.e. the condition number
+      det         (B, seq) — determinant of each J
+      sigma_ratio (B, seq) — max(σ) / min(σ), i.e. the condition number
     """
-    det = torch.linalg.det(jac)
-    sv = torch.linalg.svdvals(jac)          # (seq, d), descending
-    sigma_ratio = sv[:, 0] / sv[:, -1]
+    det         = torch.linalg.det(jac)
+    sv          = torch.linalg.svdvals(jac)        # (B, seq, d), descending
+    sigma_ratio = sv[..., 0] / sv[..., -1]
     return {"det": det, "sigma_ratio": sigma_ratio}
 
 

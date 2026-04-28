@@ -6,4 +6,4 @@ hj.print_model(model)
 ids  = hj.tokenize(tok, "Hello world")
 jacs = hj.position_jacobians(model, ids, layer_idx=0, sublayer="attn")
 
-print(f"\nresult: {jacs.shape}  — jacs[pos, i, j] = d(output[pos,i]) / d(input[pos,j])")
+print(f"\nresult: {jacs.shape}  — jacs[b, pos, i, j] = d(output[b,pos,i]) / d(input[b,pos,j])")
