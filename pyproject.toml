@@ -12,6 +12,8 @@ dependencies = [
     "transformers>=5.6.2",
     "h5py>=3.0",
     "datasets>=4.8.5",
+    "scikit-dimension",
+    "matplotlib>=3.10.9",
 ]
 
 [project.scripts]

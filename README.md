@@ -52,9 +52,11 @@ uv run hf-jacobian --component mlp
 
 
 Left to do:
-add samples from the hypersurfaces that we have
-add sample from dataset
 
 Add TwoNN and ESS in torch mode
+
+
+add samples from the hypersurfaces that we have
+
 
 Accelerate everything
