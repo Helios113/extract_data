@@ -1,11 +1,7 @@
 """
 Comparison of PyTorch TwoNN/ESS implementations against skdim references.
 
-Datasets from skdim.datasets with known intrinsic dimension:
-  - hyperBall(d=3)  : ID = 3
-  - hyperBall(d=7)  : ID = 7
-  - hyperSphere(d=4): ID = 4  (surface of S^4 embedded in R^5)
-  - hyperSphere(d=8): ID = 8
+Datasets from skdim.datasets.BenchmarkManifolds (all 24 manifolds).
 """
 
 import numpy as np
@@ -18,11 +14,11 @@ SEED = 42
 N = 800
 K = 50  # ESS neighborhood size
 
+_bm = skdim.datasets.BenchmarkManifolds(random_state=SEED)
+_data = _bm.generate(n=N)
 datasets = [
-    ("hyperBall d=3",  skdim.datasets.hyperBall(N, d=3,  random_state=SEED), 3),
-    ("hyperBall d=7",  skdim.datasets.hyperBall(N, d=7,  random_state=SEED), 7),
-    ("hyperSphere d=4", skdim.datasets.hyperSphere(N, d=4, random_state=SEED), 4),
-    ("hyperSphere d=8", skdim.datasets.hyperSphere(N, d=8, random_state=SEED), 8),
+    (name, X_np, int(_bm.truth.loc[name, "Intrinsic Dimension"]))
+    for name, X_np in _data.items()
 ]
 
 
@@ -45,7 +41,7 @@ def _row(label, true_id, ref, ours):
     delta = abs(ref - ours)
     ref_err = abs(ref - true_id)
     ours_err = abs(ours - true_id)
-    return f"  {label:<22} true={true_id}  skdim={ref:.3f} (err={ref_err:.3f})  torch={ours:.3f} (err={ours_err:.3f})  |Δ|={delta:.4f}"
+    return f"  {label:<25} true={true_id:>2}  skdim={ref:.3f} (err={ref_err:.3f})  torch={ours:.3f} (err={ours_err:.3f})  |Δ|={delta:.4f}"
 
 
 print("=" * 80)

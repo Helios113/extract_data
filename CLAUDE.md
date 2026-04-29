@@ -8,3 +8,10 @@ Prefer functional programming over OOP, but use OOP when it genuinely fits (e.g.
 - Keep each function minimal — if you can express it in one line, do so.
 - Avoid inheritance, mixins, and deep object hierarchies.
 - Use classes only when statefulness is the natural fit (PyTorch modules, dispatch modes, context managers). Keep them thin: hold state, delegate logic to functions.
+
+
+Ignore all typing -- we do not care about the checker -- this is a research codebase.
+
+# Residual Stream Capture
+
+Never read `inp[0]` inside a forward hook on an attn or ffn module to get the residual stream. Those modules receive a post-LayerNorm input (`LN(x)`), not `x`. Always use `TorchDispatchMode` to intercept `aten.add.Tensor` at the residual add site: register a forward hook on the sublayer to mark `id(sublayer_out)` as pending, then let the dispatch mode capture the result of the add (which is `x + g(LN(x))`). This is the pattern used by `_InSituJac` and `_CaptureAllMode`.

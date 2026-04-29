@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from dataclasses import dataclass
 
-from .jacobian import _block_jac_from_graph, jacobian_stats
+from .jacobian import jacobian_stats
 
 
 @dataclass
@@ -140,6 +140,6 @@ def extract_direct(
 
     x_leaf = x.detach().requires_grad_(True)
     out    = layer.attn(x_leaf) if sublayer == "attn" else layer.ffn(x_leaf)
-    jac    = _block_jac_from_graph(out, x_leaf)
-    stats  = jacobian_stats(jac)
-    return x_leaf.detach().cpu(), {k: v.cpu() for k, v in stats.items()}
+    # jac    = _block_jac_from_graph(out, x_leaf)
+    # stats  = jacobian_stats(jac)
+    # return x_leaf.detach().cpu(), {k: v.cpu() for k, v in stats.items()}

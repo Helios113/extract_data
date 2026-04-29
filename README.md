@@ -1,18 +1,8 @@
 # hf-jacobian
 
-Compute per-token Jacobians for transformer residual branches using Hugging Face models.
-
-Supported Jacobian targets per layer:
-- `attention`: $J_t = \frac{\partial (x_t + \mathrm{Attn}(\mathrm{LN}(x))_t)}{\partial x_t}$
-- `mlp`: $J_t = \frac{\partial (x'_t + \mathrm{MLP}(\mathrm{LN}(x'))_t)}{\partial x_t}$ where $x' = x + \mathrm{Attn}(\mathrm{LN}(x))$
-
-The script computes this **token by token** for each selected layer and saves a tensor of shape:
-
-- `[layers, seq_len, d_model, d_model]`
+Extract residual-stream activations (and optionally Jacobians) from transformer models.
 
 ## Setup
-
-This project is managed by `uv`.
 
 ```bash
 uv sync
@@ -21,42 +11,89 @@ uv sync
 ## Run
 
 ```bash
-uv run hf-jacobian \
-	--model gpt2 \
-	--text "The quick brown fox jumps over the lazy dog." \
-	--component attention \
-	--max-tokens 8 \
-	--max-layers 2 \
-	--save jacobians.pt \
-	--metadata jacobians.json
+python run.py configs/gpt2.json
 ```
 
-Switch to feedforward branch:
+## Config
 
-```bash
-uv run hf-jacobian --component mlp
+```json
+{
+  "model":   "gpt2",
+  "device":  "cuda",
+  "output":  "out/run.h5",
+  "compute_jacobians": false,
+  "sampling": { "n_samples": 32, "seq_len": 64, "batch_size": 4 },
+  "source": { "type": "dataset", "name": "wikitext", "config": "wikitext-2-raw-v1",
+              "split": "train", "text_column": "text" }
+}
 ```
 
-## Outputs
+Three optional flags (all default `false`):
 
-- `jacobians.pt`: serialized dict containing Jacobians and token information.
-- `jacobians.json`: run metadata and output shape.
+| flag | effect |
+|------|--------|
+| `compute_jacobians` | save raw `(seq, d, d)` Jacobian per sublayer |
+| `compute_jacobian_stats` | also compute and save `det` / `sigma_ratio` inline (requires `compute_jacobians`) |
 
-## Notes
+Stats can also be computed offline from saved Jacobians via `hf_jacobian.jacobian_stats(jac)`.
 
-- Jacobians are expensive: runtime and memory scale as $O(L \cdot T \cdot d^2)$.
-- Start small (`--max-layers`, `--max-tokens`) and scale up.
-- The script supports common GPT-style (`transformer.h`) and Llama-style (`model.layers`) block layouts.
+## HDF5 layout
 
+```
+samples/
+└── {i}/                            one per sample
+    ├── embed_out      (seq, d)     residual stream entering block 0
+    ├── final_hidden   (seq, d)     residual stream after the last block
+    │
+    ├── layer_0/
+    │   ├── attn/
+    │   │   └── hidden_out  (seq, d)
+    │   └── ffn/
+    │       └── hidden_out  (seq, d)
+    ├── layer_1/  ...
+    └── layer_N/  ...
+```
 
+With `compute_jacobians: true`, each sublayer group also contains:
 
+```
+    │   ├── attn/
+    │   │   ├── hidden_out   (seq, d)
+    │   │   └── jacobian     (seq, d, d)   raw per-token Jacobian  [gzip compressed]
+```
 
-Left to do:
+With `compute_jacobian_stats: true` (requires `compute_jacobians`), additionally:
 
-Add TwoNN and ESS in torch mode
+```
+    │   ├── attn/
+    │   │   ├── det          (seq,)     det(J_p)
+    │   │   └── sigma_ratio  (seq,)     max(σ) / min(σ)
+```
 
+## Residual stream across one block
 
-add samples from the hypersurfaces that we have
+```
+embed_out
+    │  = layer_0/attn/hidden_out input
+    ▼
+[ LN → Attn → + ]  ──►  layer_0/attn/hidden_out
+                                │
+                                ▼
+                    [ LN → FFN → + ]  ──►  layer_0/ffn/hidden_out
+                                                    │
+                                    = layer_1/attn/hidden_out input
+                                                   ...
+                                                    │
+                                              final_hidden
+```
 
+`hidden_out` of each sublayer is the input to the next, so consecutive datasets
+overlap: `layer_k/ffn/hidden_out == layer_{k+1}/attn/hidden_out input`, and
+`layer_N/ffn/hidden_out == final_hidden`.
 
-Accelerate everything
+## Jacobian targets
+
+- **attn**: $J_t = I + \frac{\partial\,\mathrm{Attn}(\mathrm{LN}(x))_t}{\partial x_t}$
+- **ffn**: $J_t = I + \frac{\partial\,\mathrm{FFN}(\mathrm{LN}(x'))_t}{\partial x'_t}$
+
+Jacobians are $O(L \cdot T \cdot d^2)$ in time and memory — start with small configs.
