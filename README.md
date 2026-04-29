@@ -96,4 +96,27 @@ overlap: `layer_k/ffn/hidden_out == layer_{k+1}/attn/hidden_out input`, and
 - **attn**: $J_t = I + \frac{\partial\,\mathrm{Attn}(\mathrm{LN}(x))_t}{\partial x_t}$
 - **ffn**: $J_t = I + \frac{\partial\,\mathrm{FFN}(\mathrm{LN}(x'))_t}{\partial x'_t}$
 
-Jacobians are $O(L \cdot T \cdot d^2)$ in time and memory — start with small configs.
+LN is **inside** the graph — the Jacobian is w.r.t. the raw residual `h`, not `LN(h)`.
+
+### Computation
+
+For each position `p`, the forward runs on `x[0:p+1]` (the full causal prefix) so
+that attention sees the correct KV context. Only the gradient at position `p` is
+kept; gradients w.r.t. earlier positions are discarded. This is unavoidable for
+causal attention — the forward must see the prefix even though the backward only
+needs one position.
+
+The inner loop chunks over output dimensions (`jac_chunk`) to bound peak VRAM:
+
+```
+peak VRAM ≈ jac_chunk × (p+1) × d   per position
+```
+
+Reduce `jac_chunk` if you hit OOM; increase it for fewer kernel launches (faster).
+
+`torch.compile` is incompatible with `is_grads_batched=True` — the compiled backward
+produces fake tensors that the vmap internals of `is_grads_batched` cannot access.
+Do not apply `torch.compile` to the sublayer function when computing Jacobians.
+
+`vmap` over positions is also not possible: each position `p` uses a different-length
+prefix `x[:p+1]`, and `vmap` requires uniform shapes across the batch dimension.

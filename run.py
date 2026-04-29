@@ -263,7 +263,7 @@ def main():
                     for layer_idx in range(n_layers):
                         for sub in _SUBLAYERS:
                             try:
-                                _, hidden_out, jac = _causal_block_jac(
+                                hidden_out, jac = _causal_block_jac(
                                     model, batch, layer_idx, sub, jac_chunk
                                 )
                             except ValueError:

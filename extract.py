@@ -23,7 +23,7 @@ def extract_target(
     if not compute_jacobians:
         _, hidden_out = capture_sublayer(model, inputs, layer_idx, sublayer)
         return cpu(hidden_out), None, None
-    _, hidden_out, jac = _causal_block_jac(model, inputs, layer_idx, sublayer, jac_chunk)
+    hidden_out, jac = _causal_block_jac(model, inputs, layer_idx, sublayer, jac_chunk)
     stats = jacobian_stats(jac) if compute_jacobian_stats else None
     if stats is not None:
         stats = {k: cpu(v) for k, v in stats.items()}

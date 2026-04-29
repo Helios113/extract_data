@@ -161,15 +161,15 @@ def _capture(model, inputs, layer_idx, sublayer, verbose: bool = False):
 
 
 def _sublayer_fn(layer, sublayer):
-    """Returns f: (seq, d) → (seq, d) — sublayer computation without the residual add."""
+    """Returns f: (seq, d) → (seq, d) — full residual x + g(LN(x)).
+    Jacobian of f w.r.t. x is I + dg/dh, with chain rule through LN included."""
     _, ln_mod  = _sub(layer, *SUBLAYERS[sublayer][0])
     _, sub_mod = _sub(layer, *SUBLAYERS[sublayer][1])
 
     def f(x):   # x: (seq, d), variable length — works for any prefix
-        h   = ln_mod(x.unsqueeze(0))
-        out = sub_mod(h)
+        out = sub_mod(ln_mod(x.unsqueeze(0)))
         out = out[0] if isinstance(out, tuple) else out
-        return out.squeeze(0)   # (seq, d)
+        return x + out.squeeze(0)   # (seq, d)
 
     return f
 
@@ -336,48 +336,49 @@ def capture_endpoints(
     return captured_embed[0], captured_final[0]
 
 
-def _causal_block_jac(
-    model, inputs, layer_idx: int, sublayer: str, jac_chunk: int = 128
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Returns (hidden_in, hidden_out, jac):
-      hidden_in  : (B, seq, d)    residual input  h
-      hidden_out : (B, seq, d)    residual output h + g(h)
-      jac        : (B, seq, d, d) per-position block Jacobian = I + dg/dh
-
-    jac_chunk controls how many output dimensions are batched per backward pass.
-    Lower → less peak VRAM; higher → fewer Python calls (faster when memory allows).
-    """
-    x_leaf, output = _capture(model, inputs, layer_idx, sublayer)
-    B, seq, d = output.shape
-
-    eye = torch.eye(d, device=x_leaf.device, dtype=x_leaf.dtype)
-    jac_list = []
+def _jac_single(fn, x_b, jac_chunk):
+    """Chunked Jacobian for one batch item. x_b: (seq, d) → (seq, d, d)."""
+    seq, d = x_b.shape
+    eye = torch.eye(d, device=x_b.device, dtype=x_b.dtype)
+    jac = torch.zeros(seq, d, d, device=x_b.device, dtype=x_b.dtype)
 
     for p in range(seq):
-        y_p = output[:, p, :]  # (B, d)
-        jac_p_chunks = []
-
+        x_p = x_b[:p+1].detach().clone().requires_grad_(True)
+        out = fn(x_p)
         for i0 in range(0, d, jac_chunk):
             i1 = min(i0 + jac_chunk, d)
-            chunk = eye[i0:i1]
-            grad_outputs = chunk.unsqueeze(1).expand(-1, B, -1)
-            is_last = (p == seq - 1) and (i1 >= d)
-
-            (g,) = torch.autograd.grad(
-                outputs=y_p,
-                inputs=x_leaf,
-                grad_outputs=grad_outputs,
+            g = torch.autograd.grad(
+                out[p], x_p,
+                grad_outputs=eye[i0:i1],
                 is_grads_batched=True,
-                retain_graph=not is_last,
-            )
+                retain_graph=(i1 < d),
+            )[0]                        # (chunk, p+1, d)
+            jac[p, i0:i1] = g[:, p]    # (chunk, d)
 
-            jac_p_chunks.append(g[:, :, p, :].permute(1, 0, 2))
+    return jac
 
-        jac_list.append(torch.cat(jac_p_chunks, dim=1))
 
-    jac = torch.stack(jac_list, dim=1)
-    return x_leaf.detach(), output.detach(), jac
+def _causal_block_jac(
+    model, inputs, layer_idx: int, sublayer: str, jac_chunk: int = 128
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Returns (hidden_out, jac):
+      hidden_out : (B, seq, d)    residual output h + g(LN(h))
+      jac        : (B, seq, d, d) per-position Jacobian d(h + g(LN(h)))/dh
+
+    Uses the sublayer function directly (no full-model graph), with a causal
+    prefix truncation per position and chunked backward over output dims.
+    jac_chunk: output dims per backward pass — lower = less VRAM, higher = faster.
+    """
+    store = capture_all_hidden(model, inputs)
+    hidden_out = store[(layer_idx, sublayer)]   # (B, seq, d), on CPU
+
+    layer = _layers(model)[layer_idx]
+    fn    = _sublayer_fn(layer, sublayer)
+
+    B = hidden_out.shape[0]
+    jacs = torch.stack([_jac_single(fn, hidden_out[b], jac_chunk) for b in range(B)])
+    return hidden_out, jacs
 
 
 def print_model(model):
@@ -401,7 +402,7 @@ def position_jacobians(
     inputs: int token ids (B, seq) or float latent representations (B, seq, d).
     Returns (B, seq, d, d).
     """
-    _, __, jac = _causal_block_jac(model, inputs, layer_idx, sublayer, jac_chunk)
+    _, jac = _causal_block_jac(model, inputs, layer_idx, sublayer, jac_chunk)
     return jac
 
 
