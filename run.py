@@ -98,10 +98,11 @@ def iter_dataset_batches(
 def iter_manifold_batches(
     src: dict, n_samples: int, seq_len: int, batch_size: int, device: str
 ) -> Iterator[tuple[int, torch.Tensor, torch.Tensor]]:
+    ambient_dim = src.get("ambient_dim", src["manifold_dim"])
     cfg = ManifoldConfig(
         manifold     = src["manifold"],
         manifold_dim = src["manifold_dim"],
-        ambient_dim  = src["ambient_dim"],
+        ambient_dim  = ambient_dim,
         n_samples    = n_samples,
         seq_len      = seq_len,
         noise_std    = src.get("noise_std", 0.0),
@@ -214,6 +215,7 @@ def main():
     model, tok = hj.load(model_name, device=device)
     n_layers   = len(_layers(model))
     d_model    = model.config.hidden_size
+    sublayers  = ("block",) if type(model).__name__ == "GPTNeoXModel" else _SUBLAYERS
     print(f"  {n_layers} layers, d_model={d_model}\n")
 
     # pre-flight: compute source-specific extra metadata
@@ -239,7 +241,7 @@ def main():
     with h5py.File(output, "w") as f:
         write_meta(f, model_name, src_type, src, n_samples, seq_len, batch_size, extra_meta)
 
-        total_steps = n_samples * n_layers * len(_SUBLAYERS)
+        total_steps = n_samples * n_layers * len(sublayers)
         with tqdm.tqdm(total=total_steps, desc="samples") as pbar:
             for offset, batch, _ in batches:
                 B = batch.shape[0]
@@ -249,27 +251,36 @@ def main():
                     store = capture_all_hidden(model, batch)
                     for b in range(B):
                         sg = f.require_group(f"samples/{offset + b}")
-                        sg.create_dataset("embed_out",    data=store[("embed", "out")][b].numpy())
-                        sg.create_dataset("final_hidden", data=store[("final", "out")][b].numpy())
+                        sg.create_dataset(
+                            "embed_out",
+                            data=store[("embed", "out")][b].float().numpy(),
+                        )
+                        sg.create_dataset(
+                            "final_hidden",
+                            data=store[("final", "out")][b].float().numpy(),
+                        )
                         for layer_idx in range(n_layers):
-                            for sub in _SUBLAYERS:
+                            for sub in sublayers:
                                 if (layer_idx, sub) not in store:
                                     continue
                                 grp = f.require_group(f"samples/{offset + b}/layer_{layer_idx}/{sub}")
-                                grp.create_dataset("hidden_out", data=store[(layer_idx, sub)][b].numpy())
-                    pbar.update(n_layers * len(_SUBLAYERS) * B)
+                                grp.create_dataset(
+                                    "hidden_out",
+                                    data=store[(layer_idx, sub)][b].float().numpy(),
+                                )
+                    pbar.update(n_layers * len(sublayers) * B)
                 else:
                     # per-(layer, sublayer) forward for Jacobian graph
                     for layer_idx in range(n_layers):
-                        for sub in _SUBLAYERS:
+                        for sub in sublayers:
                             try:
                                 hidden_out, jac = _causal_block_jac(
                                     model, batch, layer_idx, sub, jac_chunk
                                 )
                             except ValueError:
                                 continue
-                            h_out_np = hidden_out.cpu().numpy()
-                            jac_np   = jac.cpu().numpy()
+                            h_out_np = hidden_out.float().cpu().numpy()
+                            jac_np   = jac.float().cpu().numpy()
                             stats    = jacobian_stats(jac) if compute_jacobian_stats else None
                             for b in range(B):
                                 grp = f.require_group(f"samples/{offset + b}/layer_{layer_idx}/{sub}")
@@ -279,9 +290,15 @@ def main():
                                     det_np   = stats.get("det")
                                     sigma_np = stats.get("sigma_ratio")
                                     if det_np is not None:
-                                        grp.create_dataset("det",         data=det_np.cpu().numpy()[b])
+                                        grp.create_dataset(
+                                            "det",
+                                            data=det_np.float().cpu().numpy()[b],
+                                        )
                                     if sigma_np is not None:
-                                        grp.create_dataset("sigma_ratio", data=sigma_np.cpu().numpy()[b])
+                                        grp.create_dataset(
+                                            "sigma_ratio",
+                                            data=sigma_np.float().cpu().numpy()[b],
+                                        )
                             pbar.update(1)
 
                     # endpoints captured separately in the Jacobian path
@@ -289,8 +306,14 @@ def main():
                     embed_out, final_hidden = capture_endpoints(model, batch)
                     for b in range(B):
                         sg = f.require_group(f"samples/{offset + b}")
-                        sg.create_dataset("embed_out",    data=embed_out[b].cpu().numpy())
-                        sg.create_dataset("final_hidden", data=final_hidden[b].cpu().numpy())
+                        sg.create_dataset(
+                            "embed_out",
+                            data=embed_out[b].float().cpu().numpy(),
+                        )
+                        sg.create_dataset(
+                            "final_hidden",
+                            data=final_hidden[b].float().cpu().numpy(),
+                        )
 
 
 

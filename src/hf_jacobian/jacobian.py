@@ -2,21 +2,6 @@ import torch
 from torch.utils._python_dispatch import TorchDispatchMode
 from transformers import AutoModel, AutoTokenizer
 
-_LN_PRE_ATT = ("input_layernorm", "ln_1", "ln1", "layernorm_before")
-_LN_PRE_FFN = ("post_attention_layernorm", "ln_2", "ln2", "layernorm_after")
-_ATT        = ("self_attn", "attention", "attn")
-_FFN        = ("mlp", "feed_forward", "ffn")
-
-SUBLAYERS = {
-    "attn": (_LN_PRE_ATT, _ATT),
-    "ffn":  (_LN_PRE_FFN, _FFN),
-}
-
-ARCH_SUB_IS_FIRST = {
-    "GPT2Model":  {"attn": True,  "ffn": False},
-    "LlamaModel": {"attn": False, "ffn": False},
-}
-
 
 def load(model_name: str, device: str = "cpu"):
     model = AutoModel.from_pretrained(model_name).to(device).eval()
@@ -37,45 +22,6 @@ def _layers(model):
         getattr(inner, a) for a in ("layers", "h", "layer", "blocks", "block")
         if hasattr(inner, a)
     )
-
-
-def _sub(layer, *candidates):
-    for name in candidates:
-        if hasattr(layer, name):
-            return name, getattr(layer, name)
-    raise ValueError(
-        f"None of {candidates} found in {type(layer).__name__}. "
-        f"Available: {list(layer._modules)}"
-    )
-
-
-def _get_sublayer_x(model, inputs, layer_idx, sublayer):
-    """
-    Single no_grad forward pass. Returns (B, seq, d) residual input for the sublayer:
-      "attn" → block input x
-      "ffn"  → attn-residual output  x + attn(ln_1(x))
-    """
-    layer    = _layers(model)[layer_idx]
-    captured = [None]
-
-    if sublayer == "attn":
-        handle = layer.register_forward_pre_hook(
-            lambda _mod, args: captured.__setitem__(0, args[0].detach().clone())
-        )
-    else:
-        _, attn_mod = _sub(layer, *_ATT)
-        def _hook(_mod, inp, out):
-            a = out[0] if isinstance(out, tuple) else out
-            captured[0] = (inp[0] + a).detach().clone()
-        handle = attn_mod.register_forward_hook(_hook)
-
-    with torch.no_grad():
-        if inputs.is_floating_point():
-            model(inputs_embeds=inputs)
-        else:
-            model(inputs)
-    handle.remove()
-    return captured[0]  # (B, seq, d)
 
 
 class _InSituJac(TorchDispatchMode):
@@ -113,53 +59,6 @@ class _InSituJac(TorchDispatchMode):
         return func(*args, **(kwargs or {}))
 
 
-def _capture(model, inputs, layer_idx, sublayer, verbose: bool = False):
-    if sublayer not in SUBLAYERS:
-        raise ValueError(f"sublayer must be one of {list(SUBLAYERS)}, got {sublayer!r}")
-
-    layer = _layers(model)[layer_idx]
-    ln_candidates, sub_candidates = SUBLAYERS[sublayer]
-    ln_name, ln   = _sub(layer, *ln_candidates)
-    sub_name, sub = _sub(layer, *sub_candidates)
-
-    if verbose:
-        print(f"sublayer : {sublayer}  (layer {layer_idx})")
-        print(f"  ln  = .{ln_name}  ({type(ln).__name__})")
-        print(f"  sub = .{sub_name}  ({type(sub).__name__})")
-
-    intercept = _InSituJac(verbose=verbose)
-    handles   = []
-
-    if sublayer == "attn":
-        def inject(mod, args):
-            intercept.x_leaf = args[0].detach().clone().requires_grad_(True)
-            return (intercept.x_leaf,)
-        handles.append(layer.register_forward_pre_hook(inject))
-    else:
-        _, attn = _sub(layer, *_ATT)
-        def set_inject(mod, inp, out):
-            intercept.inject_id = id(out[0] if isinstance(out, tuple) else out)
-        handles.append(attn.register_forward_hook(set_inject))
-
-    def set_capture(mod, inp, out):
-        intercept.capture_id = id(out[0] if isinstance(out, tuple) else out)
-    handles.append(sub.register_forward_hook(set_capture))
-
-    with intercept:
-        if inputs.is_floating_point():
-            model(inputs_embeds=inputs)
-        else:
-            model(inputs)
-
-    for h in handles:
-        h.remove()
-
-    x, out = intercept.x_leaf, intercept.output
-    if verbose:
-        print(f"  x_leaf : {tuple(x.shape)}   output : {tuple(out.shape)}")
-    return x, out
-
-
 def _sublayer_fn_gpt2(layer, sublayer):
     if sublayer == "attn":
         def f(x):                              # x: (seq, d)
@@ -174,10 +73,6 @@ def _sublayer_fn_gpt2(layer, sublayer):
 
 def _sublayer_fn_llama(layer, model, sublayer):
     if sublayer == "attn":
-        # RoPE embeddings are shared across layers and depend only on seq length.
-        # Pre-compute once at construction time so f(x) has the right signature.
-        # position_embeddings is a (cos, sin) tuple of shape (1, seq, d_head).
-        # We recompute lazily per call since prefix length varies per position p.
         def f(x):                              # x: (seq, d)
             seq = x.shape[0]
             position_ids = torch.arange(seq, device=x.device).unsqueeze(0)
@@ -194,9 +89,67 @@ def _sublayer_fn_llama(layer, model, sublayer):
     return f
 
 
+def _sublayer_fn_qwen3(layer, model, sublayer):
+    # Same structure as Llama. Qwen3Attention.forward requires attention_mask
+    # as a positional argument (not keyword-only), so pass it explicitly.
+    if sublayer == "attn":
+        def f(x):                              # x: (seq, d)
+            seq = x.shape[0]
+            position_ids = torch.arange(seq, device=x.device).unsqueeze(0)
+            rope = model.rotary_emb(x.unsqueeze(0), position_ids=position_ids)
+            out = layer.self_attn(
+                layer.input_layernorm(x.unsqueeze(0)),
+                position_embeddings=rope,
+                attention_mask=None,
+            )[0]
+            return x + out.squeeze(0)
+    else:
+        def f(x):
+            out = layer.mlp(layer.post_attention_layernorm(x.unsqueeze(0)))
+            return x + out.squeeze(0)
+    return f
+
+
+def _sublayer_fn_pythia(layer, model, sublayer):
+    # GPT-NeoX uses a parallel residual: x + attn(LN1(x)) + mlp(LN2(x)).
+    # Attn and mlp share the same input — there is no separate attn or ffn
+    # residual step. Only sublayer="block" is meaningful.
+    if sublayer != "block":
+        raise ValueError(
+            f"GPTNeoXModel uses a parallel residual — only sublayer='block' is "
+            f"supported, got {sublayer!r}"
+        )
+    def f(x):                                  # x: (seq, d)
+        seq = x.shape[0]
+        position_ids = torch.arange(seq, device=x.device).unsqueeze(0)
+        rope = model.rotary_emb(x.unsqueeze(0), position_ids=position_ids)
+        attn_out = layer.attention(
+            layer.input_layernorm(x.unsqueeze(0)),
+            attention_mask=None,
+            position_embeddings=rope,
+        )[0]
+        mlp_out = layer.mlp(layer.post_attention_layernorm(x.unsqueeze(0)))
+        return x + attn_out.squeeze(0) + mlp_out.squeeze(0)
+    return f
+
+
 _SUBLAYER_FN_REGISTRY = {
-    "GPT2Model":  lambda layer, model, sublayer: _sublayer_fn_gpt2(layer, sublayer),
-    "LlamaModel": _sublayer_fn_llama,
+    "GPT2Model":    lambda layer, _model, sublayer: _sublayer_fn_gpt2(layer, sublayer),
+    "LlamaModel":   _sublayer_fn_llama,
+    "Qwen3Model":   _sublayer_fn_qwen3,
+    "GPTNeoXModel": _sublayer_fn_pythia,
+}
+
+
+# Per-architecture getters for the attn and ffn submodules used in capture_all_hidden.
+# Each value is (attn_getter, ffn_getter) where getter: layer -> nn.Module.
+# For parallel-residual architectures (Pythia), both getters return the same
+# module (attention) and the key stored is "block" not "attn"/"ffn".
+_CAPTURE_MODS = {
+    "GPT2Model":    (lambda l: l.attn,      lambda l: l.mlp),
+    "LlamaModel":   (lambda l: l.self_attn, lambda l: l.mlp),
+    "Qwen3Model":   (lambda l: l.self_attn, lambda l: l.mlp),
+    "GPTNeoXModel": (lambda l: l.attention, lambda l: l.mlp),
 }
 
 
@@ -204,50 +157,15 @@ def _sublayer_fn(layer, sublayer, model=None):
     """Dispatch to the architecture-specific sublayer function.
     Returns f: (seq, d) → (seq, d) — full residual x + g(LN(x))."""
     arch = type(model).__name__ if model is not None else None
-    if arch in _SUBLAYER_FN_REGISTRY:
-        return _SUBLAYER_FN_REGISTRY[arch](layer, model, sublayer)
-    # fallback: generic name-based lookup (kept for custom models)
-    _, ln_mod  = _sub(layer, *SUBLAYERS[sublayer][0])
-    _, sub_mod = _sub(layer, *SUBLAYERS[sublayer][1])
-    def f(x):
-        out = sub_mod(ln_mod(x.unsqueeze(0)))
-        out = out[0] if isinstance(out, tuple) else out
-        return x + out.squeeze(0)
-    return f
+    if arch not in _SUBLAYER_FN_REGISTRY:
+        raise ValueError(
+            f"Unsupported architecture {arch!r}. "
+            f"Register it in _SUBLAYER_FN_REGISTRY. "
+            f"Supported: {list(_SUBLAYER_FN_REGISTRY)}"
+        )
+    return _SUBLAYER_FN_REGISTRY[arch](layer, model, sublayer)
 
 
-def _diag_jac(fn, x_b: torch.Tensor, chunk_d: int) -> torch.Tensor:
-    """
-    Per-position (d, d) Jacobian blocks via truncated-sequence causal forward
-    and chunked is_grads_batched backward.
-
-    For position p the forward uses only x_b[:p+1] (causal masking guarantees
-    out[p] is identical to the full-sequence result).  Each backward call
-    processes chunk_d output dimensions simultaneously.
-
-    Peak extra memory: chunk_d × (sublayer activation size for seq tokens).
-    Reduce chunk_d if you hit OOM; increase it for fewer Python round-trips.
-    """
-    seq, d = x_b.shape
-    jac = torch.zeros(seq, d, d, device=x_b.device, dtype=x_b.dtype)
-
-    for p in range(seq):
-        x_t = x_b[:p + 1].detach().clone().requires_grad_(True)  # (p+1, d)
-        out = fn(x_t)                                              # (p+1, d)
-
-        for i0 in range(0, d, chunk_d):
-            i1 = min(i0 + chunk_d, d)
-            eye_chunk = torch.zeros(i1 - i0, d, device=x_b.device, dtype=x_b.dtype)
-            eye_chunk[torch.arange(i1 - i0), torch.arange(i0, i1)] = 1
-            g = torch.autograd.grad(
-                out[p], x_t,
-                grad_outputs=eye_chunk,         # (chunk, d) — batched seeds
-                retain_graph=(i1 < d),
-                is_grads_batched=True,
-            )[0]                                # (chunk, p+1, d)
-            jac[p, i0:i1] = g[:, p]            # (chunk, d)
-
-    return jac   # (seq, d, d)
 
 
 class _CaptureAllMode(TorchDispatchMode):
@@ -295,6 +213,15 @@ def capture_all_hidden(
     layers  = _layers(model)
     mode    = _CaptureAllMode()
     handles = []
+    arch    = type(model).__name__
+
+    if arch not in _CAPTURE_MODS:
+        raise ValueError(
+            f"Unsupported architecture {arch!r}. "
+            f"Register it in _CAPTURE_MODS. "
+            f"Supported: {list(_CAPTURE_MODS)}"
+        )
+    attn_getter, ffn_getter = _CAPTURE_MODS[arch]
 
     # embed_out: residual entering block 0 (pre-LN, so a pre_hook is correct here)
     def _hook_embed(_mod, args):
@@ -303,15 +230,24 @@ def capture_all_hidden(
 
     for i, layer in enumerate(layers):
         # Mark the sublayer output id so the dispatch mode knows which add to capture
-        _, attn_mod = _sub(layer, *_ATT)
-        def _set_attn(_mod, _inp, out, _i=i):
-            mode.pending[id(out[0] if isinstance(out, tuple) else out)] = (_i, "attn")
-        handles.append(attn_mod.register_forward_hook(_set_attn))
+        if arch == "GPTNeoXModel":
+            block_mod = ffn_getter(layer)
+            def _set_block(_mod, _inp, out, _i=i):
+                a = out[0] if isinstance(out, tuple) else out
+                mode.pending[id(a)] = (_i, "block")
+            handles.append(block_mod.register_forward_hook(_set_block))
+        else:
+            attn_mod = attn_getter(layer)
+            def _set_attn(_mod, _inp, out, _i=i):
+                a = out[0] if isinstance(out, tuple) else out
+                mode.pending[id(a)] = (_i, "attn")
+            handles.append(attn_mod.register_forward_hook(_set_attn))
 
-        _, ffn_mod = _sub(layer, *_FFN)
-        def _set_ffn(_mod, _inp, out, _i=i):
-            mode.pending[id(out[0] if isinstance(out, tuple) else out)] = (_i, "ffn")
-        handles.append(ffn_mod.register_forward_hook(_set_ffn))
+            ffn_mod = ffn_getter(layer)
+            def _set_ffn(_mod, _inp, out, _i=i):
+                a = out[0] if isinstance(out, tuple) else out
+                mode.pending[id(a)] = (_i, "ffn")
+            handles.append(ffn_mod.register_forward_hook(_set_ffn))
 
     # final_hidden: output of the last block (the block's output IS the residual)
     def _hook_final(_mod, _inp, out):
@@ -329,19 +265,6 @@ def capture_all_hidden(
         h.remove()
 
     return mode.store
-
-
-def capture_sublayer(
-    model, inputs, layer_idx: int, sublayer: str
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Returns (hidden_in, hidden_out):
-      hidden_in  : (B, seq, d)  residual input  h
-      hidden_out : (B, seq, d)  residual output h + g(h)
-    Used by the Jacobian path — do not call for activation-only extraction.
-    """
-    x, output = _capture(model, inputs, layer_idx, sublayer)
-    return x.detach(), output.detach()
 
 
 def capture_endpoints(
@@ -414,8 +337,13 @@ def _causal_block_jac(
     """
     store = capture_all_hidden(model, inputs)
     hidden_out = store[(layer_idx, sublayer)]   # (B, seq, d), on CPU
-
     layer = _layers(model)[layer_idx]
+    if isinstance(inputs, torch.Tensor):
+        device = inputs.device
+    else:
+        device = next(layer.parameters()).device
+    dtype = next(layer.parameters()).dtype
+    hidden_out = hidden_out.to(device=device, dtype=dtype)
     fn    = _sublayer_fn(layer, sublayer, model=model)
 
     B = hidden_out.shape[0]
@@ -429,68 +357,6 @@ def print_model(model):
     print(f"\nLayer[0] children:")
     for name, mod in layers[0].named_children():
         print(f"  .{name:<30} {type(mod).__name__}")
-
-
-def position_jacobians(
-    model,
-    inputs: torch.Tensor,
-    layer_idx: int,
-    sublayer: str,
-    jac_chunk: int = 64,
-) -> torch.Tensor:
-    """
-    Per-position (d, d) block Jacobian.
-
-    inputs: int token ids (B, seq) or float latent representations (B, seq, d).
-    Returns (B, seq, d, d).
-    """
-    _, jac = _causal_block_jac(model, inputs, layer_idx, sublayer, jac_chunk)
-    return jac
-
-
-def position_jacobians_seq(
-    model,
-    inputs: torch.Tensor,
-    layer_idx: int,
-    sublayer: str,
-    jac_chunk: int = 64,
-    compute_det: bool = True,
-    compute_sigma_ratio: bool = True,
-) -> dict:
-    """
-    Per-position Jacobian stats for all batch items.
-
-        inputs: int token ids (B, seq) or float latent representations (B, seq, d).
-        Returns dict with requested stats keys:
-            det         (B, seq) — determinant of each J
-            sigma_ratio (B, seq) — max(σ) / min(σ), i.e. the condition number
-    """
-    if sublayer not in SUBLAYERS:
-        raise ValueError(f"sublayer must be one of {list(SUBLAYERS)}, got {sublayer!r}")
-
-    layer = _layers(model)[layer_idx]
-    x = _get_sublayer_x(model, inputs, layer_idx, sublayer)  # (B, seq, d)
-    fn = _sublayer_fn(layer, sublayer, model=model)
-
-    d = x.shape[-1]
-    eye = torch.eye(d, device=x.device, dtype=x.dtype)
-
-    dets = [] if compute_det else None
-    sigmas = [] if compute_sigma_ratio else None
-    for x_b in x:
-        jac_b = _diag_jac(fn, x_b, jac_chunk) + eye
-        if compute_det:
-            dets.append(torch.linalg.det(jac_b))
-        if compute_sigma_ratio:
-            sv = torch.linalg.svdvals(jac_b)
-            sigmas.append(sv[..., 0] / sv[..., -1])
-
-    stats = {}
-    if compute_det:
-        stats["det"] = torch.stack(dets)
-    if compute_sigma_ratio:
-        stats["sigma_ratio"] = torch.stack(sigmas)
-    return stats
 
 
 def jacobian_stats(jac: torch.Tensor) -> dict:

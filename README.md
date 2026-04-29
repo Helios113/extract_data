@@ -106,15 +106,20 @@ to avoid fragile name-pattern matching:
 | Model class | attn | ffn |
 |-------------|------|-----|
 | `GPT2Model` | `layer.attn(layer.ln_1(x))[0]` | `layer.mlp(layer.ln_2(x))` |
-| `LlamaModel` | `layer.self_attn(layer.input_layernorm(x), position_embeddings=rope)` | `layer.mlp(layer.post_attention_layernorm(x))` |
+| `LlamaModel` | `layer.self_attn(layer.input_layernorm(x), position_embeddings=rope)[0]` | `layer.mlp(layer.post_attention_layernorm(x))` |
+| `Qwen3Model` | same as Llama, `attention_mask=None` required explicitly | `layer.mlp(layer.post_attention_layernorm(x))` |
+| `GPTNeoXModel` | **parallel residual only** — `sublayer="block"` gives `x + attn(...) + mlp(...)` | (same block) |
 
-For Llama, RoPE embeddings are computed from `model.rotary_emb` at each prefix
-length — they depend only on sequence position, not on the hidden states, so
-this is exact.
+For models with RoPE (`LlamaModel`, `Qwen3Model`, `GPTNeoXModel`), embeddings are
+recomputed from `model.rotary_emb` at each prefix length. They depend only on
+sequence position so this is exact.
 
-A generic name-based fallback (`_sub` lookup) is used for `CustomModel` and any
-unregistered architecture. Add new architectures to `_SUBLAYER_FN_REGISTRY` in
-[jacobian.py](src/hf_jacobian/jacobian.py).
+**Pythia note:** GPT-NeoX uses a parallel residual (`x + attn(LN1(x)) + mlp(LN2(x))`
+in a single add). There are no separate attn/ffn residual steps, so only
+`sublayer="block"` is valid — `"attn"` and `"ffn"` will raise.
+
+Unsupported architectures raise immediately with a clear error. Add new ones to
+`_SUBLAYER_FN_REGISTRY` in [jacobian.py](src/hf_jacobian/jacobian.py).
 
 ### Computation
 
