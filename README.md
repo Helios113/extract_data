@@ -98,6 +98,24 @@ overlap: `layer_k/ffn/hidden_out == layer_{k+1}/attn/hidden_out input`, and
 
 LN is **inside** the graph — the Jacobian is w.r.t. the raw residual `h`, not `LN(h)`.
 
+### Supported architectures
+
+The sublayer function used for Jacobian computation is hardcoded per architecture
+to avoid fragile name-pattern matching:
+
+| Model class | attn | ffn |
+|-------------|------|-----|
+| `GPT2Model` | `layer.attn(layer.ln_1(x))[0]` | `layer.mlp(layer.ln_2(x))` |
+| `LlamaModel` | `layer.self_attn(layer.input_layernorm(x), position_embeddings=rope)` | `layer.mlp(layer.post_attention_layernorm(x))` |
+
+For Llama, RoPE embeddings are computed from `model.rotary_emb` at each prefix
+length — they depend only on sequence position, not on the hidden states, so
+this is exact.
+
+A generic name-based fallback (`_sub` lookup) is used for `CustomModel` and any
+unregistered architecture. Add new architectures to `_SUBLAYER_FN_REGISTRY` in
+[jacobian.py](src/hf_jacobian/jacobian.py).
+
 ### Computation
 
 For each position `p`, the forward runs on `x[0:p+1]` (the full causal prefix) so

@@ -160,17 +160,59 @@ def _capture(model, inputs, layer_idx, sublayer, verbose: bool = False):
     return x, out
 
 
-def _sublayer_fn(layer, sublayer):
-    """Returns f: (seq, d) → (seq, d) — full residual x + g(LN(x)).
-    Jacobian of f w.r.t. x is I + dg/dh, with chain rule through LN included."""
+def _sublayer_fn_gpt2(layer, sublayer):
+    if sublayer == "attn":
+        def f(x):                              # x: (seq, d)
+            out = layer.attn(layer.ln_1(x.unsqueeze(0)))[0]  # tuple → [0]
+            return x + out.squeeze(0)
+    else:
+        def f(x):
+            out = layer.mlp(layer.ln_2(x.unsqueeze(0)))
+            return x + out.squeeze(0)
+    return f
+
+
+def _sublayer_fn_llama(layer, model, sublayer):
+    if sublayer == "attn":
+        # RoPE embeddings are shared across layers and depend only on seq length.
+        # Pre-compute once at construction time so f(x) has the right signature.
+        # position_embeddings is a (cos, sin) tuple of shape (1, seq, d_head).
+        # We recompute lazily per call since prefix length varies per position p.
+        def f(x):                              # x: (seq, d)
+            seq = x.shape[0]
+            position_ids = torch.arange(seq, device=x.device).unsqueeze(0)
+            rope = model.rotary_emb(x.unsqueeze(0), position_ids=position_ids)
+            out = layer.self_attn(
+                layer.input_layernorm(x.unsqueeze(0)),
+                position_embeddings=rope,
+            )[0]
+            return x + out.squeeze(0)
+    else:
+        def f(x):
+            out = layer.mlp(layer.post_attention_layernorm(x.unsqueeze(0)))
+            return x + out.squeeze(0)
+    return f
+
+
+_SUBLAYER_FN_REGISTRY = {
+    "GPT2Model":  lambda layer, model, sublayer: _sublayer_fn_gpt2(layer, sublayer),
+    "LlamaModel": _sublayer_fn_llama,
+}
+
+
+def _sublayer_fn(layer, sublayer, model=None):
+    """Dispatch to the architecture-specific sublayer function.
+    Returns f: (seq, d) → (seq, d) — full residual x + g(LN(x))."""
+    arch = type(model).__name__ if model is not None else None
+    if arch in _SUBLAYER_FN_REGISTRY:
+        return _SUBLAYER_FN_REGISTRY[arch](layer, model, sublayer)
+    # fallback: generic name-based lookup (kept for custom models)
     _, ln_mod  = _sub(layer, *SUBLAYERS[sublayer][0])
     _, sub_mod = _sub(layer, *SUBLAYERS[sublayer][1])
-
-    def f(x):   # x: (seq, d), variable length — works for any prefix
+    def f(x):
         out = sub_mod(ln_mod(x.unsqueeze(0)))
         out = out[0] if isinstance(out, tuple) else out
-        return x + out.squeeze(0)   # (seq, d)
-
+        return x + out.squeeze(0)
     return f
 
 
@@ -374,7 +416,7 @@ def _causal_block_jac(
     hidden_out = store[(layer_idx, sublayer)]   # (B, seq, d), on CPU
 
     layer = _layers(model)[layer_idx]
-    fn    = _sublayer_fn(layer, sublayer)
+    fn    = _sublayer_fn(layer, sublayer, model=model)
 
     B = hidden_out.shape[0]
     jacs = torch.stack([_jac_single(fn, hidden_out[b], jac_chunk) for b in range(B)])
@@ -428,7 +470,7 @@ def position_jacobians_seq(
 
     layer = _layers(model)[layer_idx]
     x = _get_sublayer_x(model, inputs, layer_idx, sublayer)  # (B, seq, d)
-    fn = _sublayer_fn(layer, sublayer)
+    fn = _sublayer_fn(layer, sublayer, model=model)
 
     d = x.shape[-1]
     eye = torch.eye(d, device=x.device, dtype=x.dtype)
