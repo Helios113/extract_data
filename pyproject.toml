@@ -15,6 +15,7 @@ dependencies = [
     "scikit-dimension",
     "matplotlib>=3.10.9",
     "tqdm>=4.67.3",
+    "wandb>=0.18",
 ]
 
 [project.scripts]

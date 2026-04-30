@@ -11,3 +11,8 @@ wheels/
 *.h5
 .claude
 out/
+
+# Run artefacts (large H5s, wandb local cache, slurm logs that can leak env via set -x)
+runs/
+wandb/
+logs/

@@ -1,0 +1,25 @@
+{
+  "model": "gpt2",
+  "device": "cuda",
+  "compute_jacobians": true,
+  "store_full_jacobians": false,
+  "compute_jacobian_stats": true,
+  "jac_chunk": 768,
+  "sampling": {
+    "n_samples": 128,
+    "seq_len": 128,
+    "batch_size": 4
+  },
+  "source": {
+    "type": "dataset",
+    "name": "wikitext",
+    "config": "wikitext-2-raw-v1",
+    "split": "train",
+    "text_column": "text"
+  },
+  "wandb": {
+    "project": "extract-data",
+    "name": "gpt2-wikitext-jac-n128-s128",
+    "tags": ["jacobian", "spectrum-only", "gpt2"]
+  }
+}

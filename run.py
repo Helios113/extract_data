@@ -208,8 +208,20 @@ def main():
     src        = cfg["source"]
     src_type   = src["type"]
     compute_jacobians      = cfg.get("compute_jacobians", False)
+    store_full_jacobians   = cfg.get("store_full_jacobians", False)
     compute_jacobian_stats = cfg.get("compute_jacobian_stats", False)
     jac_chunk              = cfg.get("jac_chunk", 64)
+
+    wb = cfg.get("wandb", {})
+    if wb is not False:
+        import wandb
+        wandb.init(
+            entity=wb.get("entity"),
+            project=wb.get("project", "extract-data"),
+            name=wb.get("name") or f"{model_name}-{src_type}",
+            tags=wb.get("tags"),
+            config=cfg,
+        )
 
     print(f"Loading {model_name!r} on {device} ...")
     model, tok = hj.load(model_name, device=device)
@@ -280,25 +292,20 @@ def main():
                             except ValueError:
                                 continue
                             h_out_np = hidden_out.float().cpu().numpy()
-                            jac_np   = jac.float().cpu().numpy()
+                            jac_np   = jac.float().cpu().numpy() if store_full_jacobians else None
                             stats    = jacobian_stats(jac) if compute_jacobian_stats else None
                             for b in range(B):
                                 grp = f.require_group(f"samples/{offset + b}/layer_{layer_idx}/{sub}")
                                 grp.create_dataset("hidden_out", data=h_out_np[b])
-                                grp.create_dataset("jacobian",   data=jac_np[b], compression="gzip")
+                                if jac_np is not None:
+                                    grp.create_dataset("jacobian", data=jac_np[b], compression="gzip")
                                 if stats is not None:
-                                    det_np   = stats.get("det")
-                                    sigma_np = stats.get("sigma_ratio")
-                                    if det_np is not None:
-                                        grp.create_dataset(
-                                            "det",
-                                            data=det_np.float().cpu().numpy()[b],
-                                        )
-                                    if sigma_np is not None:
-                                        grp.create_dataset(
-                                            "sigma_ratio",
-                                            data=sigma_np.float().cpu().numpy()[b],
-                                        )
+                                    for key in ("det", "sigma_max", "sigma_min"):
+                                        t = stats.get(key)
+                                        if t is not None:
+                                            grp.create_dataset(
+                                                key, data=t.float().cpu().numpy()[b]
+                                            )
                             pbar.update(1)
 
                     # endpoints captured separately in the Jacobian path

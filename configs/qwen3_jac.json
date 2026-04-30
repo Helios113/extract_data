@@ -3,6 +3,7 @@
   "device": "cuda",
   "output": "out/tests/qwen3_jac.h5",
   "compute_jacobians": true,
+  "store_full_jacobians": true,
   "sampling": {
     "n_samples": 1,
     "seq_len": 2,
