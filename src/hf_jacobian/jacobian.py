@@ -386,10 +386,13 @@ def jacobian_stats(jac: torch.Tensor) -> dict:
     """
     jac: (B, seq, d, d) batched stack of square Jacobians.
     Returns dict with:
-      det        (B, seq) — determinant of each J
-      sigma_max  (B, seq) — largest singular value (= ‖J‖_2)
-      sigma_min  (B, seq) — smallest singular value (= distance to singular)
-    κ = sigma_max / sigma_min and κ⁻¹ = sigma_min / sigma_max are derivable.
+      det              (B, seq)    — determinant of each J
+      singular_values  (B, seq, d) — full singular spectrum, descending
+      sigma_max        (B, seq)    — largest singular value (= ‖J‖_2)
+      sigma_min        (B, seq)    — smallest singular value (= distance to singular)
+    sigma_max/sigma_min are kept alongside the full spectrum for convenience;
+    they're just the first/last entries of singular_values. κ = sigma_max /
+    sigma_min and κ⁻¹ = sigma_min / sigma_max are derivable.
     Cast jac to fp32 before SVD/det: torch.linalg's MAGMA-batched paths don't
     support bf16/fp16 on CUDA, and fp32 SVD is more accurate regardless. The
     matrix being measured is unchanged — only the spectrum measurement is
@@ -398,4 +401,9 @@ def jacobian_stats(jac: torch.Tensor) -> dict:
     jac = jac.to(torch.float32)
     det = torch.linalg.det(jac)
     sv  = torch.linalg.svdvals(jac)         # (B, seq, d), descending
-    return {"det": det, "sigma_max": sv[..., 0], "sigma_min": sv[..., -1]}
+    return {
+        "det": det,
+        "singular_values": sv,
+        "sigma_max": sv[..., 0],
+        "sigma_min": sv[..., -1],
+    }

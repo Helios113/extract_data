@@ -386,7 +386,7 @@ def main():
                                            jac.float().cpu().numpy())
                             if compute_jacobian_stats:
                                 stats = jacobian_stats(jac)
-                                for key in ("det", "sigma_max", "sigma_min"):
+                                for key in ("det", "sigma_max", "sigma_min", "singular_values"):
                                     t = stats.get(key)
                                     if t is not None:
                                         _ds_append(f, f"layer_{layer_idx}/{sub}/{key}",
