@@ -43,7 +43,7 @@ def main():
                          "Defaults to all available estimator columns.")
     ap.add_argument("--pos", type=int, nargs="+", default=None,
                     help="Token position(s) to plot. Defaults to all in the CSV.")
-    ap.add_argument("--out", default="out/figs",
+    ap.add_argument("--out", default="out/figs/",
                     help="Save figure to this path instead of displaying it.")
     args = ap.parse_args()
 
