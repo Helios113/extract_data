@@ -2,7 +2,7 @@
   "model": "Qwen/Qwen3-1.7B",
   "device": "cuda",
   "weights": "real",
-  "output": "out/qwen/1.7b/real/c4.h5",
+  "output": "out/qwen/1.7b/dataset/c4_n500_s50.h5",
   "compute_jacobians": false,
   "wandb": false,
   "sampling": {

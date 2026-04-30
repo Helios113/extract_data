@@ -2,7 +2,7 @@
   "model": "Qwen/Qwen3-1.7B",
   "device": "cuda",
   "weights": "real",
-  "output": "out/qwen/1.7b/real/hyperplane.h5",
+  "output": "out/qwen/1.7b/manifold/hyperplane_n1000_s100.h5",
   "compute_jacobians": false,
   "wandb": false,
   "sampling": {

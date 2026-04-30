@@ -2,7 +2,7 @@
   "model": "EleutherAI/pythia-160m",
   "device": "cuda",
   "weights": "real",
-  "output": "out/pythia/160m/real/wikitext.h5",
+  "output": "out/pythia/160m/dataset/wikitext_n500_s50.h5",
   "compute_jacobians": false,
   "wandb": false,
   "sampling": {

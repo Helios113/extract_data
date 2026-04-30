@@ -48,7 +48,6 @@ Usage:
 
 import argparse
 import json
-import multiprocessing as mp
 from pathlib import Path
 from typing import Iterator
 import tqdm
@@ -238,21 +237,6 @@ def _ds_append(f, name: str, batch_np):
                          compression="lzf", shuffle=True, chunks=(1,) + batch_np.shape[1:])
 
 
-def _writer_process(output: str, meta_args: tuple, queue: mp.Queue):
-    """Owns the HDF5 file; appends batches received from the main process."""
-    with h5py.File(output, "w") as f:
-        write_meta(f, *meta_args)
-        while True:
-            item = queue.get()
-            if item is None:  # sentinel — finalise and exit
-                actual_samples = f["embed_out"].shape[0] if "embed_out" in f else 0
-                seq_len = int(f["meta"].attrs["seq_len"])
-                f["meta"].attrs["n_samples"] = actual_samples
-                f["meta"].attrs["n_tokens"]  = actual_samples * seq_len
-                break
-            name, arr = item
-            _ds_append(f, name, arr)
-
 
 
 # ─── main ────────────────────────────────────────────────────────────────────
@@ -340,38 +324,25 @@ def main():
         raise ValueError(f"Unknown source type {src_type!r}. Choose: dataset, manifold, benchmark, random_tokens")
 
     Path(output).parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(output, "w") as f:
+        write_meta(
+            f, model_name, src_type, src, n_samples, seq_len, batch_size, extra_meta,
+            weights=weights, d_model=d_model, n_layers=n_layers,
+            compute_jacobians=compute_jacobians, compute_jacobian_stats=compute_jacobian_stats,
+        )
 
-    meta_args = (
-        model_name, src_type, src, n_samples, seq_len, batch_size, extra_meta,
-        weights, d_model, n_layers, compute_jacobians, compute_jacobian_stats,
-    )
-    queue = mp.Queue(maxsize=4)  # bound to cap memory; writer stays at most 4 batches behind
-    writer = mp.Process(target=_writer_process, args=(output, meta_args, queue), daemon=True)
-    writer.start()
+        def _gpu_postfix():
+            if not torch.cuda.is_available():
+                return {}
+            dev = torch.cuda.current_device()
+            mem_alloc = torch.cuda.memory_allocated(dev) / 1024**3
+            mem_total = torch.cuda.get_device_properties(dev).total_memory / 1024**3
+            mem_free  = mem_total - mem_alloc
+            util = torch.cuda.utilization(dev)
+            return {"gpu": f"{util}%", "vram_free": f"{mem_free:.1f}GB"}
 
-    def _put(name, arr):
-        while True:
-            try:
-                queue.put((name, arr), timeout=5)
-                return
-            except Exception:
-                pass
-            if not writer.is_alive():
-                raise RuntimeError(f"Writer process died (exit code {writer.exitcode})")
-
-    def _gpu_postfix():
-        if not torch.cuda.is_available():
-            return {}
-        dev = torch.cuda.current_device()
-        mem_alloc = torch.cuda.memory_allocated(dev) / 1024**3
-        mem_total = torch.cuda.get_device_properties(dev).total_memory / 1024**3
-        mem_free  = mem_total - mem_alloc
-        util = torch.cuda.utilization(dev)
-        return {"gpu": f"{util}%", "vram_free": f"{mem_free:.1f}GB"}
-
-    actual_samples = 0
-    total_steps = n_samples * n_layers * len(sublayers)
-    try:
+        actual_samples = 0
+        total_steps = n_samples * n_layers * len(sublayers)
         with tqdm.tqdm(total=total_steps, desc="samples") as pbar:
             for offset, batch, raw in batches:
                 B = batch.shape[0]
@@ -383,20 +354,20 @@ def main():
                     store = capture_all_hidden(model, batch)
 
                     if src_type == "dataset":
-                        _put("input_ids", batch.cpu().numpy())
+                        _ds_append(f, "input_ids", batch.cpu().numpy())
                     elif src_type == "random_tokens":
-                        _put("token_ids", raw.numpy())
+                        _ds_append(f, "token_ids", raw.numpy())
                     elif raw is not None:
-                        _put("manifold_points", raw.numpy())
+                        _ds_append(f, "manifold_points", raw.numpy())
 
-                    _put("embed_out",    store[("embed", "out")].float().cpu().numpy())
-                    _put("final_hidden", store[("final", "out")].float().cpu().numpy())
+                    _ds_append(f, "embed_out",    store[("embed", "out")].float().cpu().numpy())
+                    _ds_append(f, "final_hidden", store[("final", "out")].float().cpu().numpy())
                     for layer_idx in range(n_layers):
                         for sub in sublayers:
                             if (layer_idx, sub) not in store:
                                 continue
-                            _put(f"layer_{layer_idx}/{sub}/hidden_out",
-                                 store[(layer_idx, sub)].float().cpu().numpy())
+                            _ds_append(f, f"layer_{layer_idx}/{sub}/hidden_out",
+                                       store[(layer_idx, sub)].float().cpu().numpy())
                     pbar.update(n_layers * len(sublayers) * B)
                     pbar.set_postfix(_gpu_postfix())
                 else:
@@ -408,30 +379,29 @@ def main():
                                 )
                             except ValueError:
                                 continue
-                            _put(f"layer_{layer_idx}/{sub}/hidden_out",
-                                 hidden_out.float().cpu().numpy())
+                            _ds_append(f, f"layer_{layer_idx}/{sub}/hidden_out",
+                                       hidden_out.float().cpu().numpy())
                             if store_full_jacobians:
-                                _put(f"layer_{layer_idx}/{sub}/jacobian",
-                                     jac.float().cpu().numpy())
+                                _ds_append(f, f"layer_{layer_idx}/{sub}/jacobian",
+                                           jac.float().cpu().numpy())
                             if compute_jacobian_stats:
                                 stats = jacobian_stats(jac)
                                 for key in ("det", "sigma_max", "sigma_min"):
                                     t = stats.get(key)
                                     if t is not None:
-                                        _put(f"layer_{layer_idx}/{sub}/{key}",
-                                             t.float().cpu().numpy())
+                                        _ds_append(f, f"layer_{layer_idx}/{sub}/{key}",
+                                                   t.float().cpu().numpy())
                             pbar.update(1)
                             pbar.set_postfix(_gpu_postfix())
 
                     from hf_jacobian.jacobian import capture_endpoints
                     embed_out, final_hidden = capture_endpoints(model, batch)
-                    _put("embed_out",    embed_out.float().cpu().numpy())
-                    _put("final_hidden", final_hidden.float().cpu().numpy())
-    finally:
-        queue.put(None)  # sentinel — let writer finalise even if we error
-        writer.join()
+                    _ds_append(f, "embed_out",    embed_out.float().cpu().numpy())
+                    _ds_append(f, "final_hidden", final_hidden.float().cpu().numpy())
 
-    print(f"\nActual samples: {actual_samples}  |  tokens: {actual_samples * seq_len}")
+        f["meta"].attrs["n_samples"] = actual_samples
+        f["meta"].attrs["n_tokens"]  = actual_samples * seq_len
+        print(f"\nActual samples: {actual_samples}  |  tokens: {actual_samples * seq_len}")
 
 
 if __name__ == "__main__":
