@@ -1,6 +1,6 @@
 # hf-jacobian
 
-Extract residual-stream activations (and optionally Jacobians) from transformer models.
+Extract residual-stream activations (and optionally Jacobians) from transformer models, then estimate intrinsic dimension.
 
 ## Setup
 
@@ -20,55 +20,123 @@ python run.py configs/gpt2.json
 {
   "model":   "gpt2",
   "device":  "cuda",
+  "weights": "real",
   "output":  "out/run.h5",
   "compute_jacobians": false,
+  "compute_jacobian_stats": false,
   "sampling": { "n_samples": 32, "seq_len": 64, "batch_size": 4 },
-  "source": { "type": "dataset", "name": "wikitext", "config": "wikitext-2-raw-v1",
-              "split": "train", "text_column": "text" }
+  "source": { ... }
 }
 ```
 
-Three optional flags (all default `false`):
+`"weights"` can be `"real"` (default) or `"random"` (randomly re-initialised weights, same architecture).
 
-| flag | effect |
-|------|--------|
-| `compute_jacobians` | save raw `(seq, d, d)` Jacobian per sublayer |
-| `compute_jacobian_stats` | also compute and save `det` / `sigma_ratio` inline (requires `compute_jacobians`) |
+### Data sources
 
-Stats can also be computed offline from saved Jacobians via `hf_jacobian.jacobian_stats(jac)`.
+**HuggingFace dataset** — tokenised text, activations driven by real token IDs:
+```json
+{ "type": "dataset", "name": "wikitext", "config": "wikitext-2-raw-v1",
+  "split": "train", "text_column": "text" }
+```
+
+**Manifold** — synthetic geometric points fed as `inputs_embeds`:
+```json
+{ "type": "manifold", "manifold": "plane", "manifold_dim": 10,
+  "ambient_dim": 11, "noise_std": 0.0, "seed": 0,
+  "neighbourhood_radius": 0.1 }
+```
+- `manifold`: `plane` | `sphere` | `ellipsoid` | `hyperboloid`
+- `ambient_dim` defaults to `manifold_dim`; projected to `d_model` automatically
+- `neighbourhood_radius` (plane only): each sequence is sampled within an L2 ball of this radius around a random anchor — all tokens in a sequence stay local
+- `scales` (ellipsoid only): list of `d+1` axis lengths
+
+**Random tokens** — uniform random token IDs looked up in the model's embedding matrix:
+```json
+{ "type": "random_tokens", "seed": 0, "vocab_size": null }
+```
+- `vocab_size`: cap the vocabulary (default: full model vocab)
+
+**Benchmark** — skdim `BenchmarkManifolds`:
+```json
+{ "type": "benchmark", "name": "Affine3", "seed": 42 }
+```
 
 ## HDF5 layout
 
+All float datasets are gzip-9 + byte-shuffle compressed.
+
 ```
-samples/
-└── {i}/                            one per sample
-    ├── embed_out      (seq, d)     residual stream entering block 0
-    ├── final_hidden   (seq, d)     residual stream after the last block
-    │
-    ├── layer_0/
-    │   ├── attn/
-    │   │   └── hidden_out  (seq, d)
-    │   └── ffn/
-    │       └── hidden_out  (seq, d)
-    ├── layer_1/  ...
-    └── layer_N/  ...
+/meta                               attrs: model, weights, d_model, n_layers,
+│                                          source_type, n_samples, seq_len, batch_size,
+│                                          compute_jacobians, compute_jacobian_stats,
+│                                          + source-specific attrs (see below)
+└── samples/
+    └── {i}/                        one per sample
+        ├── embed_out    (seq, d)   residual stream entering block 0
+        ├── final_hidden (seq, d)   residual stream after the last block
+        │
+        ├── input_ids    (seq,)     int64  [dataset only]
+        ├── token_ids    (seq,)     int64  [random_tokens only]
+        ├── manifold_points (seq, ambient_dim)  [manifold / benchmark only]
+        │
+        ├── layer_0/
+        │   ├── attn/
+        │   │   └── hidden_out  (seq, d)
+        │   └── ffn/
+        │       └── hidden_out  (seq, d)
+        ├── layer_1/  ...
+        └── layer_N/  ...
 ```
 
 With `compute_jacobians: true`, each sublayer group also contains:
 
 ```
-    │   ├── attn/
-    │   │   ├── hidden_out   (seq, d)
-    │   │   └── jacobian     (seq, d, d)   raw per-token Jacobian  [gzip compressed]
+        │   ├── attn/
+        │   │   ├── hidden_out   (seq, d)
+        │   │   └── jacobian     (seq, d, d)   [gzip-9 compressed]
 ```
 
-With `compute_jacobian_stats: true` (requires `compute_jacobians`), additionally:
+With `compute_jacobian_stats: true` (requires `compute_jacobians`):
 
 ```
-    │   ├── attn/
-    │   │   ├── det          (seq,)     det(J_p)
-    │   │   └── sigma_ratio  (seq,)     max(σ) / min(σ)
+        │   ├── attn/
+        │   │   ├── det          (seq,)   det(J_p)
+        │   │   └── sigma_ratio  (seq,)   max(σ) / min(σ)
 ```
+
+### Source-specific meta attrs
+
+| source_type | extra attrs |
+|---|---|
+| `dataset` | `dataset_name`, `dataset_config`, `split`, `text_column`, `tokenizer` |
+| `manifold` | `manifold`, `manifold_dim`, `ambient_dim`, `noise_std`, `seed`, `project_dim`, `neighbourhood_radius`, `scales` |
+| `random_tokens` | `seed`, `vocab_size` |
+| `benchmark` | `benchmark_name`, `benchmark_true_id`, `ambient_dim` |
+
+## Intrinsic dimension analysis
+
+### Compute ESS + TwoNN
+
+```bash
+python analyze_id.py <h5_file> <out.csv> [--pos 10 49 -1] [--depth layer_3/attn] [--ess-k 100] [--ess-d 1]
+```
+
+- `--pos`: one or more token positions (negative indices supported, e.g. `-1` = last)
+- `--depth`: single depth key; omit for all depths
+- Always runs ESS-a and ESS-b in parallel; outputs columns `twonn`, `ess_a`, `ess_b`, `n`
+- CSV header contains `#`-prefixed metadata lines — read with `pd.read_csv(f, comment='#')`
+- Results are flushed after each cell; partial output is preserved on cancel
+- If `out.csv` exists, a timestamp suffix is added — existing files are never overwritten
+
+### Plot
+
+```bash
+python plot_id.py <csv_file> [--method twonn|ess_a|ess_b] [--pos 10 49] [--out fig.png]
+```
+
+- Colour = token position, line style = estimator
+- `--method` selects a single estimator; default plots all available
+- Expects columns `twonn`, `ess_a`, `ess_b` as produced by `analyze_id.py`
 
 ## Residual stream across one block
 
@@ -100,9 +168,6 @@ LN is **inside** the graph — the Jacobian is w.r.t. the raw residual `h`, not 
 
 ### Supported architectures
 
-The sublayer function used for Jacobian computation is hardcoded per architecture
-to avoid fragile name-pattern matching:
-
 | Model class | attn | ffn |
 |-------------|------|-----|
 | `GPT2Model` | `layer.attn(layer.ln_1(x))[0]` | `layer.mlp(layer.ln_2(x))` |
@@ -111,23 +176,18 @@ to avoid fragile name-pattern matching:
 | `GPTNeoXModel` | **parallel residual only** — `sublayer="block"` gives `x + attn(...) + mlp(...)` | (same block) |
 
 For models with RoPE (`LlamaModel`, `Qwen3Model`, `GPTNeoXModel`), embeddings are
-recomputed from `model.rotary_emb` at each prefix length. They depend only on
-sequence position so this is exact.
+recomputed from `model.rotary_emb` at each prefix length.
 
 **Pythia note:** GPT-NeoX uses a parallel residual (`x + attn(LN1(x)) + mlp(LN2(x))`
-in a single add). There are no separate attn/ffn residual steps, so only
-`sublayer="block"` is valid — `"attn"` and `"ffn"` will raise.
+in a single add). Only `sublayer="block"` is valid — `"attn"` and `"ffn"` will raise.
 
 Unsupported architectures raise immediately with a clear error. Add new ones to
 `_SUBLAYER_FN_REGISTRY` in [jacobian.py](src/hf_jacobian/jacobian.py).
 
 ### Computation
 
-For each position `p`, the forward runs on `x[0:p+1]` (the full causal prefix) so
-that attention sees the correct KV context. Only the gradient at position `p` is
-kept; gradients w.r.t. earlier positions are discarded. This is unavoidable for
-causal attention — the forward must see the prefix even though the backward only
-needs one position.
+For each position `p`, the forward runs on `x[0:p+1]` so attention sees the correct
+KV context. Only the gradient at position `p` is kept.
 
 The inner loop chunks over output dimensions (`jac_chunk`) to bound peak VRAM:
 
@@ -137,9 +197,8 @@ peak VRAM ≈ jac_chunk × (p+1) × d   per position
 
 Reduce `jac_chunk` if you hit OOM; increase it for fewer kernel launches (faster).
 
-`torch.compile` is incompatible with `is_grads_batched=True` — the compiled backward
-produces fake tensors that the vmap internals of `is_grads_batched` cannot access.
-Do not apply `torch.compile` to the sublayer function when computing Jacobians.
 
-`vmap` over positions is also not possible: each position `p` uses a different-length
-prefix `x[:p+1]`, and `vmap` requires uniform shapes across the batch dimension.
+
+Back project the space?
+Train GPT1
+Dim est of the manifold

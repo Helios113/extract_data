@@ -90,8 +90,8 @@ def iter_dataset_batches(
     )
     chunks = chunk_dataset(tok, ds, src.get("text_column", "text"), seq_len, n_samples)
 
-    for start in range(0, len(chunks), batch_size):
-        batch_ids = chunks[start : start + batch_size]
+    for start in range(0, n_samples, batch_size):
+        batch_ids = chunks[start : min(start + batch_size, n_samples)]
         ids_t     = torch.tensor(batch_ids, dtype=torch.long).to(device)
         yield start, ids_t, None
 
@@ -115,8 +115,8 @@ def iter_random_token_batches(
     raw_ids = ids.reshape(n_samples, seq_len)                                # (n, seq) int
 
     for start in range(0, n_samples, batch_size):
-        batch  = embeds[start : start + batch_size].to(device)
-        raw    = raw_ids[start : start + batch_size]
+        batch  = embeds[start : min(start + batch_size, n_samples)].to(device)
+        raw    = raw_ids[start : min(start + batch_size, n_samples)]
         yield start, batch, raw
 
 
@@ -172,8 +172,8 @@ def iter_benchmark_batches(
     print(f"BenchmarkManifold {name!r}: D={D} → projected to d_model={d_model}\n")
 
     for start in range(0, n_samples, batch_size):
-        batch     = seqs[start : start + batch_size].to(device)
-        raw_batch = raw[start : start + batch_size]
+        batch     = seqs[start : min(start + batch_size, n_samples)].to(device)
+        raw_batch = raw[start : min(start + batch_size, n_samples)]
         yield start, batch, raw_batch
 
 
@@ -316,10 +316,22 @@ def main():
             compute_jacobians=compute_jacobians, compute_jacobian_stats=compute_jacobian_stats,
         )
 
+        def _gpu_postfix():
+            if not torch.cuda.is_available():
+                return {}
+            dev = torch.cuda.current_device()
+            mem_alloc = torch.cuda.memory_allocated(dev) / 1024**3
+            mem_total = torch.cuda.get_device_properties(dev).total_memory / 1024**3
+            mem_free  = mem_total - mem_alloc
+            util = torch.cuda.utilization(dev)
+            return {"gpu": f"{util}%", "vram_free": f"{mem_free:.1f}GB"}
+
+        actual_samples = 0
         total_steps = n_samples * n_layers * len(sublayers)
         with tqdm.tqdm(total=total_steps, desc="samples") as pbar:
             for offset, batch, _ in batches:
                 B = batch.shape[0]
+                actual_samples += B
                 if batch.is_floating_point():
                     batch = batch.to(dtype=next(model.parameters()).dtype)
 
@@ -337,6 +349,7 @@ def main():
                                 grp = f.require_group(f"samples/{offset + b}/layer_{layer_idx}/{sub}")
                                 _ds(grp, "hidden_out", store[(layer_idx, sub)][b].float().numpy())
                     pbar.update(n_layers * len(sublayers) * B)
+                    pbar.set_postfix(_gpu_postfix())
                 else:
                     # per-(layer, sublayer) forward for Jacobian graph
                     for layer_idx in range(n_layers):
@@ -362,6 +375,7 @@ def main():
                                     if sigma_np is not None:
                                         _ds(grp, "sigma_ratio", sigma_np.float().cpu().numpy()[b])
                             pbar.update(1)
+                            pbar.set_postfix(_gpu_postfix())
 
                     # endpoints captured separately in the Jacobian path
                     from hf_jacobian.jacobian import capture_endpoints
@@ -371,6 +385,9 @@ def main():
                         _ds(sg, "embed_out",    embed_out[b].float().cpu().numpy())
                         _ds(sg, "final_hidden", final_hidden[b].float().cpu().numpy())
 
+        f["meta"].attrs["n_samples"] = actual_samples
+        f["meta"].attrs["n_tokens"]  = actual_samples * seq_len
+        print(f"\nActual samples: {actual_samples}  |  tokens: {actual_samples * seq_len}")
 
 
 if __name__ == "__main__":
