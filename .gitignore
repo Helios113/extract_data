@@ -9,5 +9,4 @@ wheels/
 # Virtual environments
 .venv
 .claude
-out/
-/qwen3_random_tokens.h5
+/out
