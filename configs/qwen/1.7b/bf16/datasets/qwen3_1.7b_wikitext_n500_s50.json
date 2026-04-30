@@ -2,7 +2,7 @@
   "model": "Qwen/Qwen3-1.7B",
   "device": "cuda",
   "weights": "real",
-  "output": "out/qwen_real_c4_en.h5",
+  "output": "out/qwen/1.7b/real/wikitext.h5",
   "compute_jacobians": false,
   "wandb": false,
   "sampling": {
@@ -13,8 +13,8 @@
   "source": {
     "type": "dataset",
     "seed": 42,
-    "name": "allenai/c4",
-    "config": "en",
+    "name": "Salesforce/wikitext",
+    "config": "wikitext-2-raw-v1",
     "split": "train",
     "text_column": "text"
   }

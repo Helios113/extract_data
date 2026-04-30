@@ -2,7 +2,7 @@
   "model": "Qwen/Qwen3-1.7B",
   "device": "cuda",
   "weights": "real",
-  "output": "out/qwen_real_gsm8k.h5",
+  "output": "out/qwen/1.7b/real/gsm8k.h5",
   "compute_jacobians": false,
   "wandb": false,
   "sampling": {

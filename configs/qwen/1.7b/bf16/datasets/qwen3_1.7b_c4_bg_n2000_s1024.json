@@ -1,0 +1,21 @@
+{
+  "model": "Qwen/Qwen3-1.7B",
+  "device": "cuda",
+  "weights": "real",
+  "output": "out/qwen/1.7b/dataset/c4_bg_n2000_s1024.h5",
+  "compute_jacobians": false,
+  "wandb": false,
+  "sampling": {
+    "n_samples": 2000,
+    "seq_len": 1024,
+    "batch_size": 100
+  },
+  "source": {
+    "type": "dataset",
+    "seed": 42,
+    "name": "allenai/c4",
+    "config": "bg",
+    "split": "train",
+    "text_column": "text"
+  }
+}

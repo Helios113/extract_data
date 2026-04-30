@@ -1,14 +1,14 @@
 {
-  "model": "Qwen/Qwen3-1.7B",
+  "model": "EleutherAI/pythia-160m",
   "device": "cuda",
   "weights": "real",
-  "output": "out/qwen_real_wikitest.h5",
+  "output": "out/pythia/160m/real/wikitext.h5",
   "compute_jacobians": false,
   "wandb": false,
   "sampling": {
     "n_samples": 500,
     "seq_len": 50,
-    "batch_size": 10
+    "batch_size": 100
   },
   "source": {
     "type": "dataset",

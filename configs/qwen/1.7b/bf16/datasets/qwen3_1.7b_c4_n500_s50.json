@@ -2,7 +2,7 @@
   "model": "Qwen/Qwen3-1.7B",
   "device": "cuda",
   "weights": "real",
-  "output": "out/qwen_real_c4_bg.h5",
+  "output": "out/qwen/1.7b/real/c4.h5",
   "compute_jacobians": false,
   "wandb": false,
   "sampling": {
@@ -14,7 +14,7 @@
     "type": "dataset",
     "seed": 42,
     "name": "allenai/c4",
-    "config": "bg",
+    "config": "en",
     "split": "train",
     "text_column": "text"
   }
