@@ -2,20 +2,20 @@
   "model": "Qwen/Qwen3-1.7B",
   "device": "cuda",
   "weights": "real",
-  "output": "out/qwen_real_wikitest.h5",
+  "output": "out/qwen_real_gsm8k.h5",
   "compute_jacobians": false,
   "wandb": false,
   "sampling": {
     "n_samples": 500,
     "seq_len": 50,
-    "batch_size": 10
+    "batch_size": 100
   },
   "source": {
     "type": "dataset",
     "seed": 42,
-    "name": "Salesforce/wikitext",
-    "config": "wikitext-2-raw-v1",
+    "name": "openai/gsm8k",
+    "config": "main",
     "split": "train",
-    "text_column": "text"
+    "text_column": ["question", "answer"]
   }
 }

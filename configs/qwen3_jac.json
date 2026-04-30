@@ -11,7 +11,8 @@
   },
   "source": {
     "type": "dataset",
-    "name": "wikitext",
+    "seed": 42,
+    "name": "Salesforce/wikitext",
     "config": "wikitext-2-raw-v1",
     "split": "train",
     "text_column": "text"

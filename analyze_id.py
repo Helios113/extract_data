@@ -33,14 +33,13 @@ from hf_jacobian import ess, twonn
 def depth_keys(f: h5py.File) -> list[str]:
     """Return ordered depth labels matching the residual stream order."""
     keys = ["embed"]
-    s0 = f["samples/0"]
     layer_names = sorted(
-        [k for k in s0.keys() if k.startswith("layer_")],
+        [k for k in f.keys() if k.startswith("layer_")],
         key=lambda k: int(k.split("_")[1]),
     )
     for ln in layer_names:
         for sub in ("attn", "ffn"):
-            if sub in s0[ln]:
+            if sub in f[ln]:
                 keys.append(f"{ln}/{sub}")
     keys.append("final")
     return keys
@@ -48,23 +47,16 @@ def depth_keys(f: h5py.File) -> list[str]:
 
 def load_latents(f: h5py.File, depth: str, pos: int) -> torch.Tensor:
     """
-    Collect the hidden vector at (depth, pos) across all samples.
+    Return hidden vectors at (depth, pos) across all samples.
     Returns (N, d_model) float32 tensor.
     """
-    n_samples = int(f["meta"].attrs["n_samples"])
-    rows = []
-    for i in range(n_samples):
-        g = f[f"samples/{i}"]
-        if depth == "embed":
-            vec = g["embed_out"][pos]       # (d_model,)
-        elif depth == "final":
-            vec = g["final_hidden"][pos]
-        else:
-            # e.g. "layer_3/attn"  →  g["layer_3/attn/hidden_out"][pos]
-            vec = g[f"{depth}/hidden_out"][pos]
-        rows.append(vec)
-    X = np.stack(rows, axis=0)             # (N, d_model)
-    return torch.from_numpy(X)
+    if depth == "embed":
+        X = f["embed_out"][:, pos, :]
+    elif depth == "final":
+        X = f["final_hidden"][:, pos, :]
+    else:
+        X = f[f"{depth}/hidden_out"][:, pos, :]
+    return torch.from_numpy(np.array(X, dtype=np.float32))
 
 
 def resolve_out_path(p: str) -> Path:

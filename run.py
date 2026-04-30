@@ -88,6 +88,8 @@ def iter_dataset_batches(
         split=src.get("split", "train"),
         streaming=True,
     )
+    if "seed" in src:
+        ds = ds.shuffle(seed=src["seed"], buffer_size=10_000)
     chunks = chunk_dataset(tok, ds, src.get("text_column", "text"), seq_len, n_samples)
 
     for start in range(0, n_samples, batch_size):
@@ -221,19 +223,18 @@ def write_meta(
             meta.attrs[k] = v
 
 
-def _ds(grp, name: str, data):
-    """Create a compressed dataset. shuffle=True (byte-shuffle) + gzip-9 works well for floats."""
-    grp.create_dataset(name, data=data, compression="gzip", compression_opts=9, shuffle=True)
 
-
-def save_inputs(f, si: int, b: int, src_type: str, batch: torch.Tensor, raw):
-    grp = f.require_group(f"samples/{si}")
-    if src_type == "dataset":
-        grp.create_dataset("input_ids",      data=batch[b].cpu().numpy())
-    elif src_type == "random_tokens":
-        grp.create_dataset("token_ids",      data=raw[b].numpy())
-    elif raw is not None:
-        grp.create_dataset("manifold_points", data=raw[b].numpy())
+def _ds_append(f, name: str, batch_np):
+    """Append a (B, ...) batch to a resizable dataset, creating it on first call."""
+    if name in f:
+        ds = f[name]
+        old = ds.shape[0]
+        ds.resize(old + batch_np.shape[0], axis=0)
+        ds[old:] = batch_np
+    else:
+        maxshape = (None,) + batch_np.shape[1:]
+        f.create_dataset(name, data=batch_np, maxshape=maxshape,
+                         compression="lzf", shuffle=True, chunks=(1,) + batch_np.shape[1:])
 
 
 
@@ -344,29 +345,34 @@ def main():
         actual_samples = 0
         total_steps = n_samples * n_layers * len(sublayers)
         with tqdm.tqdm(total=total_steps, desc="samples") as pbar:
-            for offset, batch, _ in batches:
+            for offset, batch, raw in batches:
                 B = batch.shape[0]
                 actual_samples += B
                 if batch.is_floating_point():
                     batch = batch.to(dtype=next(model.parameters()).dtype)
 
                 if not compute_jacobians:
-                    # single forward — captures everything at once
                     store = capture_all_hidden(model, batch)
-                    for b in range(B):
-                        sg = f.require_group(f"samples/{offset + b}")
-                        _ds(sg, "embed_out",    store[("embed", "out")][b].float().numpy())
-                        _ds(sg, "final_hidden", store[("final", "out")][b].float().numpy())
-                        for layer_idx in range(n_layers):
-                            for sub in sublayers:
-                                if (layer_idx, sub) not in store:
-                                    continue
-                                grp = f.require_group(f"samples/{offset + b}/layer_{layer_idx}/{sub}")
-                                _ds(grp, "hidden_out", store[(layer_idx, sub)][b].float().numpy())
+
+                    # input ids / manifold points
+                    if src_type == "dataset":
+                        _ds_append(f, "input_ids", batch.cpu().numpy())
+                    elif src_type == "random_tokens":
+                        _ds_append(f, "token_ids", raw.numpy())
+                    elif raw is not None:
+                        _ds_append(f, "manifold_points", raw.numpy())
+
+                    _ds_append(f, "embed_out",    store[("embed", "out")].float().cpu().numpy())
+                    _ds_append(f, "final_hidden", store[("final", "out")].float().cpu().numpy())
+                    for layer_idx in range(n_layers):
+                        for sub in sublayers:
+                            if (layer_idx, sub) not in store:
+                                continue
+                            _ds_append(f, f"layer_{layer_idx}/{sub}/hidden_out",
+                                       store[(layer_idx, sub)].float().cpu().numpy())
                     pbar.update(n_layers * len(sublayers) * B)
                     pbar.set_postfix(_gpu_postfix())
                 else:
-                    # per-(layer, sublayer) forward for Jacobian graph
                     for layer_idx in range(n_layers):
                         for sub in sublayers:
                             try:
@@ -376,30 +382,24 @@ def main():
                             except ValueError:
                                 continue
                             h_out_np = hidden_out.float().cpu().numpy()
-                            jac_np   = jac.float().cpu().numpy() if store_full_jacobians else None
-                            stats    = jacobian_stats(jac) if compute_jacobian_stats else None
-                            for b in range(B):
-                                grp = f.require_group(f"samples/{offset + b}/layer_{layer_idx}/{sub}")
-                                grp.create_dataset("hidden_out", data=h_out_np[b])
-                                if jac_np is not None:
-                                    grp.create_dataset("jacobian", data=jac_np[b], compression="gzip")
-                                if stats is not None:
-                                    for key in ("det", "sigma_max", "sigma_min"):
-                                        t = stats.get(key)
-                                        if t is not None:
-                                            grp.create_dataset(
-                                                key, data=t.float().cpu().numpy()[b]
-                                            )
+                            _ds_append(f, f"layer_{layer_idx}/{sub}/hidden_out", h_out_np)
+                            if store_full_jacobians:
+                                _ds_append(f, f"layer_{layer_idx}/{sub}/jacobian",
+                                           jac.float().cpu().numpy())
+                            if compute_jacobian_stats:
+                                stats = jacobian_stats(jac)
+                                for key in ("det", "sigma_max", "sigma_min"):
+                                    t = stats.get(key)
+                                    if t is not None:
+                                        _ds_append(f, f"layer_{layer_idx}/{sub}/{key}",
+                                                   t.float().cpu().numpy())
                             pbar.update(1)
                             pbar.set_postfix(_gpu_postfix())
 
-                    # endpoints captured separately in the Jacobian path
                     from hf_jacobian.jacobian import capture_endpoints
                     embed_out, final_hidden = capture_endpoints(model, batch)
-                    for b in range(B):
-                        sg = f.require_group(f"samples/{offset + b}")
-                        _ds(sg, "embed_out",    embed_out[b].float().cpu().numpy())
-                        _ds(sg, "final_hidden", final_hidden[b].float().cpu().numpy())
+                    _ds_append(f, "embed_out",    embed_out.float().cpu().numpy())
+                    _ds_append(f, "final_hidden", final_hidden.float().cpu().numpy())
 
         f["meta"].attrs["n_samples"] = actual_samples
         f["meta"].attrs["n_tokens"]  = actual_samples * seq_len

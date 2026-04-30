@@ -201,48 +201,63 @@ Stats can also be computed offline from saved Jacobians via `hf_jacobian.jacobia
 
 ## HDF5 layout
 
-All float datasets are gzip-9 + byte-shuffle compressed.
+All float datasets are lzf + byte-shuffle compressed. Arrays are stored flat
+(one dataset per tensor, first axis = sample index) rather than in per-sample
+groups. This lets h5py compress larger contiguous arrays and avoids per-dataset
+HDF5 metadata overhead.
+
+**Write performance** (Qwen3-1.7B, B=32, seq=50, measured on one A100):
+
+| strategy | write time | file size |
+|---|---|---|
+| per-sample gzip-9 (old) | 15.1 s | 295.8 MB |
+| per-sample lzf | 5.5 s | 331.2 MB |
+| **batched lzf (current)** | **4.6 s** | **319.8 MB** |
+
+The forward pass for the same batch takes ~1.7 s, so HDF5 is no longer the
+bottleneck.
 
 ```
 /meta                               attrs: model, weights, d_model, n_layers,
 │                                          source_type, n_samples, seq_len, batch_size,
 │                                          compute_jacobians, compute_jacobian_stats,
 │                                          + source-specific attrs (see below)
-└── samples/
-    └── {i}/                        one per sample
-        ├── embed_out    (seq, d)   residual stream entering block 0
-        ├── final_hidden (seq, d)   residual stream after the last block
-        │
-        ├── input_ids    (seq,)     int64  [dataset only]
-        ├── token_ids    (seq,)     int64  [random_tokens only]
-        ├── manifold_points (seq, ambient_dim)  [manifold / benchmark only]
-        │
-        ├── layer_0/
-        │   ├── attn/
-        │   │   └── hidden_out  (seq, d)
-        │   └── ffn/
-        │       └── hidden_out  (seq, d)
-        ├── layer_1/  ...
-        └── layer_N/  ...
+│
+├── embed_out        (N, seq, d)   residual stream entering block 0
+├── final_hidden     (N, seq, d)   residual stream after the last block
+│
+├── input_ids        (N, seq)      int64  [dataset only]
+├── token_ids        (N, seq)      int64  [random_tokens only]
+├── manifold_points  (N, seq, ambient_dim)  [manifold / benchmark only]
+│
+├── layer_0/
+│   ├── attn/
+│   │   └── hidden_out  (N, seq, d)
+│   └── ffn/
+│       └── hidden_out  (N, seq, d)
+├── layer_1/  ...
+└── layer_N/  ...
 ```
 
 With `compute_jacobians: true, store_full_jacobians: true`, each sublayer
 group also contains:
 
 ```
-        │   ├── attn/
-        │   │   ├── hidden_out   (seq, d)
-        │   │   └── jacobian     (seq, d, d)   [gzip-9 compressed]
+├── layer_0/
+│   └── attn/
+│       ├── hidden_out   (N, seq, d)
+│       └── jacobian     (N, seq, d, d)   [lzf compressed]
 ```
 
 With `compute_jacobians: true, compute_jacobian_stats: true`, each sublayer
 group additionally contains:
 
 ```
-    │   ├── attn/
-    │   │   ├── det          (seq,)     det(J_p)
-    │   │   ├── sigma_max    (seq,)     largest singular value (= ‖J_p‖_2)
-    │   │   └── sigma_min    (seq,)     smallest singular value (= distance to singular)
+├── layer_0/
+│   └── attn/
+│       ├── det          (N, seq)     det(J_p)
+│       ├── sigma_max    (N, seq)     largest singular value (= ‖J_p‖_2)
+│       └── sigma_min    (N, seq)     smallest singular value (= distance to singular)
 ```
 
 `κ = sigma_max / sigma_min` and `κ⁻¹ = sigma_min / sigma_max` are derivable
@@ -320,12 +335,12 @@ LN is **inside** the graph — the Jacobian is w.r.t. the raw residual `h`, not 
 
 ### Supported architectures
 
-| Model class | attn | ffn |
-|-------------|------|-----|
-| `GPT2Model` | `layer.attn(layer.ln_1(x))[0]` | `layer.mlp(layer.ln_2(x))` |
-| `LlamaModel` | `layer.self_attn(layer.input_layernorm(x), position_embeddings=rope)[0]` | `layer.mlp(layer.post_attention_layernorm(x))` |
-| `Qwen3Model` | same as Llama, `attention_mask=None` required explicitly | `layer.mlp(layer.post_attention_layernorm(x))` |
-| `GPTNeoXModel` | **parallel residual only** — `sublayer="block"` gives `x + attn(...) + mlp(...)` | (same block) |
+| Model | HF id | max seq len | attn | ffn |
+|-------|-------|------------:|------|-----|
+| GPT-2 | `gpt2` | 1 024 | `layer.attn(layer.ln_1(x))[0]` | `layer.mlp(layer.ln_2(x))` |
+| Pythia-160M | `EleutherAI/pythia-160m` | 2 048 | **parallel residual only** — `sublayer="block"` | (same block) |
+| Llama-3.2-1B | `meta-llama/Llama-3.2-1B` | 131 072 | `layer.self_attn(layer.input_layernorm(x), position_embeddings=rope)[0]` | `layer.mlp(layer.post_attention_layernorm(x))` |
+| Qwen3-1.7B | `Qwen/Qwen3-1.7B` | 40 960 | same as Llama, `attention_mask=None` required explicitly | `layer.mlp(layer.post_attention_layernorm(x))` |
 
 For models with RoPE (`LlamaModel`, `Qwen3Model`, `GPTNeoXModel`), embeddings are
 recomputed from `model.rotary_emb` at each prefix length.
