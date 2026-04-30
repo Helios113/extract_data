@@ -8,6 +8,7 @@ Config JSON format:
   {
     "model":   "gpt2",
     "device":  "cpu",           (optional, default "cpu")
+    "weights": "real",          (optional, "real" | "random"; default "real")
     "output":  "out/run.h5",    (optional; can be overridden via CLI positional arg)
     "sampling": {
       "n_samples":  32,
@@ -210,12 +211,27 @@ def main():
     compute_jacobians      = cfg.get("compute_jacobians", False)
     compute_jacobian_stats = cfg.get("compute_jacobian_stats", False)
     jac_chunk              = cfg.get("jac_chunk", 64)
+    weights                = cfg.get("weights", "real")
+    if weights not in ("real", "random"):
+        raise ValueError(f"'weights' must be 'real' or 'random', got {weights!r}")
 
     print(f"Loading {model_name!r} on {device} ...")
-    model, tok = hj.load(model_name, device=device)
-    n_layers   = len(_layers(model))
-    d_model    = model.config.hidden_size
-    sublayers  = ("block",) if type(model).__name__ == "GPTNeoXModel" else _SUBLAYERS
+    if model_name == "custom":
+        custom_cfg = hj.Config(**cfg.get("custom_model_config", {}))
+        model = hj.CustomModel(custom_cfg).to(device).eval()
+        checkpoint = cfg.get("checkpoint")
+        if checkpoint is not None:
+            model.load_state_dict(torch.load(checkpoint, map_location=device))
+        tok     = None
+        d_model = custom_cfg.d_model
+    else:
+        model, tok = hj.load(model_name, device=device)
+        d_model    = model.config.hidden_size
+    if weights == "random":
+        hj.reinit_weights(model)
+        print("  weights re-initialised\n")
+    n_layers  = len(_layers(model))
+    sublayers = ("block",) if type(model).__name__ == "GPTNeoXModel" else _SUBLAYERS
     print(f"  {n_layers} layers, d_model={d_model}\n")
 
     # pre-flight: compute source-specific extra metadata
@@ -229,6 +245,8 @@ def main():
 
     # build iterator
     if src_type == "dataset":
+        if tok is None:
+            raise ValueError("source type 'dataset' requires a tokenizer — CustomModel has none; use 'manifold' or 'benchmark' instead")
         batches = iter_dataset_batches(src, tok, n_samples, seq_len, batch_size, device)
     elif src_type == "manifold":
         batches = iter_manifold_batches(src, n_samples, seq_len, batch_size, device)

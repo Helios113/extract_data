@@ -13,6 +13,9 @@ def tokenize(tok, text: str, device: str = "cpu") -> torch.Tensor:
 
 
 def _layers(model):
+    from .custom_model import CustomModel
+    if isinstance(model, CustomModel):
+        return model.layers
     inner = next(
         (getattr(model, a) for a in ("model", "transformer", "gpt_neox", "encoder")
          if hasattr(model, a)),
@@ -133,11 +136,22 @@ def _sublayer_fn_pythia(layer, model, sublayer):
     return f
 
 
+def _sublayer_fn_custom(layer, _model, sublayer):
+    if sublayer == "attn":
+        def f(x):   # x: (seq, d)
+            return layer.attn(x.unsqueeze(0)).squeeze(0)
+    else:
+        def f(x):
+            return layer.ffn(x.unsqueeze(0)).squeeze(0)
+    return f
+
+
 _SUBLAYER_FN_REGISTRY = {
     "GPT2Model":    lambda layer, _model, sublayer: _sublayer_fn_gpt2(layer, sublayer),
     "LlamaModel":   _sublayer_fn_llama,
     "Qwen3Model":   _sublayer_fn_qwen3,
     "GPTNeoXModel": _sublayer_fn_pythia,
+    "CustomModel":  _sublayer_fn_custom,
 }
 
 
@@ -146,10 +160,11 @@ _SUBLAYER_FN_REGISTRY = {
 # For parallel-residual architectures (Pythia), both getters return the same
 # module (attention) and the key stored is "block" not "attn"/"ffn".
 _CAPTURE_MODS = {
-    "GPT2Model":    (lambda l: l.attn,      lambda l: l.mlp),
-    "LlamaModel":   (lambda l: l.self_attn, lambda l: l.mlp),
-    "Qwen3Model":   (lambda l: l.self_attn, lambda l: l.mlp),
-    "GPTNeoXModel": (lambda l: l.attention, lambda l: l.mlp),
+    "GPT2Model":    (lambda l: l.attn,              lambda l: l.mlp),
+    "LlamaModel":   (lambda l: l.self_attn,         lambda l: l.mlp),
+    "Qwen3Model":   (lambda l: l.self_attn,         lambda l: l.mlp),
+    "GPTNeoXModel": (lambda l: l.attention,         lambda l: l.mlp),
+    "CustomModel":  (lambda l: l.attn.self_attn,    lambda l: l.ffn.mlp),
 }
 
 
@@ -349,6 +364,12 @@ def _causal_block_jac(
     B = hidden_out.shape[0]
     jacs = torch.stack([_jac_single(fn, hidden_out[b], jac_chunk) for b in range(B)])
     return hidden_out, jacs
+
+
+def reinit_weights(model: torch.nn.Module) -> None:
+    for m in model.modules():
+        if hasattr(m, "reset_parameters"):
+            m.reset_parameters()
 
 
 def print_model(model):
