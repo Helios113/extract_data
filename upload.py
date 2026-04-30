@@ -417,9 +417,20 @@ def _fetch_ptrs(config):
                 continue
             with sftp.open(f"{index_dir}/{fname}") as f:
                 raw = f.read()
+            if b"Mac OS X" in raw:
+                try:
+                    sftp.remove(f"{index_dir}/{fname}")
+                    print(f"  [info] removed macOS metadata ptr: {fname!r}")
+                except OSError as e:
+                    print(f"  [warn] failed to remove macOS metadata ptr {fname!r}: {e}")
+                continue
             if not raw.strip():
                 continue
-            ptrs.append(json.loads(raw))
+            try:
+                ptrs.append(json.loads(raw))
+            except json.JSONDecodeError:
+                print(f"  [warn] skipping corrupt ptr: {fname!r} contents: {raw!r}")
+                continue
         return ptrs
     finally:
         sftp.close()
@@ -494,19 +505,22 @@ def _browse(tree, config):
             files   = sorted(node["files"], key=lambda p: p["filename"])
             self.sub_title = f"{self._cwd}/"
 
+            def _safe_id(prefix, raw):
+                slug = "".join(c if c.isalnum() or c in "-_" else "_" for c in raw)
+                return f"{prefix}_{slug}"
+
             lv = self.query_one(ListView)
             lv.clear()
 
             if self._cwd != ".":
                 parent = "/".join(self._cwd.split("/")[:-1]) or "."
-                item = Entry("▲  ../", "dir", parent, id="__parent__")
+                item = Entry("▲  ../", "dir", parent, id=_safe_id("parent", self._cwd))
                 item.add_class("dir")
                 lv.append(item)
 
             for d in subdirs:
                 name = d.split("/")[-1]
-                safe_id = "d_" + "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
-                item = Entry(f"▶  {name}/", "dir", d, id=safe_id)
+                item = Entry(f"▶  {name}/", "dir", d, id=_safe_id("d", d))
                 item.add_class("dir")
                 lv.append(item)
 
@@ -516,8 +530,7 @@ def _browse(tree, config):
                 check = "☑" if p["filename"] in self._selected else "☐"
                 size_mb = p["size"] / 1_048_576
                 label = f"{check} {present}  {p['filename']:<40} {size_mb:7.1f} MB"
-                safe_id = "f_" + "".join(c if c.isalnum() or c in "-_" else "_" for c in p["filename"])
-                item = Entry(label, "file", p, id=safe_id)
+                item = Entry(label, "file", p, id=_safe_id("f", p["original_path"]))
                 if p["filename"] in self._selected:
                     item.add_class("selected")
                 lv.append(item)
