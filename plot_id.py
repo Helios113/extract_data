@@ -98,7 +98,7 @@ def main():
     fig.tight_layout()
 
     if args.out:
-        fig.savefig(args.out, dpi=150)
+        fig.savefig(fname=args.out, dpi=150)
         print(f"Saved: {args.out}")
     else:
         plt.show()

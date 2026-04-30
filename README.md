@@ -8,6 +8,49 @@ Extract residual-stream activations (and optionally Jacobians) from transformer 
 uv sync
 ```
 
+## Data storage (`upload.py`)
+
+Large output files are stored on a Hetzner Storage Box and tracked via content-addressed pointer files in `.ptrs/`. This replaces DVC — no server daemon, no config beyond `upload.cfg`.
+
+### Configure
+
+Copy and fill in `upload.cfg` (already gitignored):
+
+```ini
+[remote]
+host = <username>.your-storagebox.de
+username = <username>
+password = <password>
+# Target directory on the remote
+remote_path = data
+# Number of parallel SFTP connections for push/pull (default: 4)
+workers = 4
+```
+
+### Commands
+
+```bash
+uv run python upload.py push out/               # upload a file or directory
+uv run python upload.py pull qwen3_random_tokens.h5   # download by name
+uv run python upload.py ls                      # interactive browser — navigate dirs, select files to pull
+```
+### Typical workflow
+
+```bash
+# run experiment
+uv run python run.py configs/qwen3_latent.json
+
+# push output, optionally delete local copy to free disk
+uv run python upload.py push out/qwen3_latent.h5
+
+# commit the pointer so the version is tracked
+git add .ptrs/qwen3_latent.h5.ptr
+git commit -m "push qwen3_latent results"
+
+# later, on another machine — pull just what you need
+uv run python upload.py ls
+```
+
 ## Run
 
 ```bash

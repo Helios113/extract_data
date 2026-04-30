@@ -323,8 +323,10 @@ def main():
             mem_alloc = torch.cuda.memory_allocated(dev) / 1024**3
             mem_total = torch.cuda.get_device_properties(dev).total_memory / 1024**3
             mem_free  = mem_total - mem_alloc
+            
             util = torch.cuda.utilization(dev)
-            return {"gpu": f"{util}%", "vram_free": f"{mem_free:.1f}GB"}
+            gpu_str = f"{util}%"
+            return {"gpu": gpu_str, "vram_free": f"{mem_free:.1f}GB"}
 
         actual_samples = 0
         total_steps = n_samples * n_layers * len(sublayers)
