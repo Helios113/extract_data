@@ -8,6 +8,5 @@ wheels/
 
 # Virtual environments
 .venv
-*.h5
 .claude
 out/
