@@ -64,31 +64,31 @@ class _InSituJac(TorchDispatchMode):
 
 def _sublayer_fn_gpt2(layer, sublayer):
     if sublayer == "attn":
-        def f(x):                              # x: (seq, d)
-            out = layer.attn(layer.ln_1(x.unsqueeze(0)))[0]  # tuple → [0]
-            return x + out.squeeze(0)
+        def f(x):                              # x: (B, seq, d)
+            out = layer.attn(layer.ln_1(x))[0]
+            return x + out
     else:
         def f(x):
-            out = layer.mlp(layer.ln_2(x.unsqueeze(0)))
-            return x + out.squeeze(0)
+            out = layer.mlp(layer.ln_2(x))
+            return x + out
     return f
 
 
 def _sublayer_fn_llama(layer, model, sublayer):
     if sublayer == "attn":
-        def f(x):                              # x: (seq, d)
-            seq = x.shape[0]
+        def f(x):                              # x: (B, seq, d)
+            seq = x.shape[1]
             position_ids = torch.arange(seq, device=x.device).unsqueeze(0)
-            rope = model.rotary_emb(x.unsqueeze(0), position_ids=position_ids)
+            rope = model.rotary_emb(x, position_ids=position_ids)
             out = layer.self_attn(
-                layer.input_layernorm(x.unsqueeze(0)),
+                layer.input_layernorm(x),
                 position_embeddings=rope,
             )[0]
-            return x + out.squeeze(0)
+            return x + out
     else:
         def f(x):
-            out = layer.mlp(layer.post_attention_layernorm(x.unsqueeze(0)))
-            return x + out.squeeze(0)
+            out = layer.mlp(layer.post_attention_layernorm(x))
+            return x + out
     return f
 
 
@@ -96,20 +96,20 @@ def _sublayer_fn_qwen3(layer, model, sublayer):
     # Same structure as Llama. Qwen3Attention.forward requires attention_mask
     # as a positional argument (not keyword-only), so pass it explicitly.
     if sublayer == "attn":
-        def f(x):                              # x: (seq, d)
-            seq = x.shape[0]
+        def f(x):                              # x: (B, seq, d)
+            seq = x.shape[1]
             position_ids = torch.arange(seq, device=x.device).unsqueeze(0)
-            rope = model.rotary_emb(x.unsqueeze(0), position_ids=position_ids)
+            rope = model.rotary_emb(x, position_ids=position_ids)
             out = layer.self_attn(
-                layer.input_layernorm(x.unsqueeze(0)),
+                layer.input_layernorm(x),
                 position_embeddings=rope,
                 attention_mask=None,
             )[0]
-            return x + out.squeeze(0)
+            return x + out
     else:
         def f(x):
-            out = layer.mlp(layer.post_attention_layernorm(x.unsqueeze(0)))
-            return x + out.squeeze(0)
+            out = layer.mlp(layer.post_attention_layernorm(x))
+            return x + out
     return f
 
 
@@ -122,17 +122,17 @@ def _sublayer_fn_pythia(layer, model, sublayer):
             f"GPTNeoXModel uses a parallel residual — only sublayer='block' is "
             f"supported, got {sublayer!r}"
         )
-    def f(x):                                  # x: (seq, d)
-        seq = x.shape[0]
+    def f(x):                                  # x: (B, seq, d)
+        seq = x.shape[1]
         position_ids = torch.arange(seq, device=x.device).unsqueeze(0)
-        rope = model.rotary_emb(x.unsqueeze(0), position_ids=position_ids)
+        rope = model.rotary_emb(x, position_ids=position_ids)
         attn_out = layer.attention(
-            layer.input_layernorm(x.unsqueeze(0)),
+            layer.input_layernorm(x),
             attention_mask=None,
             position_embeddings=rope,
         )[0]
-        mlp_out = layer.mlp(layer.post_attention_layernorm(x.unsqueeze(0)))
-        return x + attn_out.squeeze(0) + mlp_out.squeeze(0)
+        mlp_out = layer.mlp(layer.post_attention_layernorm(x))
+        return x + attn_out + mlp_out
     return f
 
 
@@ -316,24 +316,28 @@ def capture_endpoints(
     return captured_embed[0], captured_final[0]
 
 
-def _jac_single(fn, x_b, jac_chunk):
-    """Chunked Jacobian for one batch item. x_b: (seq, d) → (seq, d, d)."""
-    seq, d = x_b.shape
-    eye = torch.eye(d, device=x_b.device, dtype=x_b.dtype)
-    jac = torch.zeros(seq, d, d, device=x_b.device, dtype=x_b.dtype)
+def _jac_batched(fn, x_B, jac_chunk):
+    """Chunked Jacobian for a batch. x_B: (B, seq, d) → (B, seq, d, d).
+    fn must accept (B, seq, d) and return (B, seq, d)."""
+    B, seq, d = x_B.shape
+    eye = torch.eye(d, device=x_B.device, dtype=x_B.dtype)
+    jac = torch.zeros(B, seq, d, d, device=x_B.device, dtype=x_B.dtype)
 
     for p in range(seq):
-        x_p = x_b[:p+1].detach().clone().requires_grad_(True)
-        out = fn(x_p)
+        x_p = x_B[:, :p+1].detach().clone().requires_grad_(True)   # (B, p+1, d)
+        out = fn(x_p)                                              # (B, p+1, d)
+        out_p = out[:, p, :]                                       # (B, d)
         for i0 in range(0, d, jac_chunk):
             i1 = min(i0 + jac_chunk, d)
+            chunk = i1 - i0
+            go = eye[i0:i1].unsqueeze(1).expand(chunk, B, d).contiguous()  # (chunk, B, d)
             g = torch.autograd.grad(
-                out[p], x_p,
-                grad_outputs=eye[i0:i1],
+                out_p, x_p,
+                grad_outputs=go,
                 is_grads_batched=True,
                 retain_graph=(i1 < d),
-            )[0]                        # (chunk, p+1, d)
-            jac[p, i0:i1] = g[:, p]    # (chunk, d)
+            )[0]                                                   # (chunk, B, p+1, d)
+            jac[:, p, i0:i1, :] = g[:, :, p, :].transpose(0, 1)    # (B, chunk, d)
 
     return jac
 
@@ -359,10 +363,8 @@ def _causal_block_jac(
         device = next(layer.parameters()).device
     dtype = next(layer.parameters()).dtype
     hidden_out = hidden_out.to(device=device, dtype=dtype)
-    fn    = _sublayer_fn(layer, sublayer, model=model)
-
-    B = hidden_out.shape[0]
-    jacs = torch.stack([_jac_single(fn, hidden_out[b], jac_chunk) for b in range(B)])
+    fn = _sublayer_fn(layer, sublayer, model=model)
+    jacs = _jac_batched(fn, hidden_out, jac_chunk)
     return hidden_out, jacs
 
 
@@ -384,9 +386,16 @@ def jacobian_stats(jac: torch.Tensor) -> dict:
     """
     jac: (B, seq, d, d) batched stack of square Jacobians.
     Returns dict with:
-      det         (B, seq) — determinant of each J
-      sigma_ratio (B, seq) — max(σ) / min(σ), i.e. the condition number
+      det        (B, seq) — determinant of each J
+      sigma_max  (B, seq) — largest singular value (= ‖J‖_2)
+      sigma_min  (B, seq) — smallest singular value (= distance to singular)
+    κ = sigma_max / sigma_min and κ⁻¹ = sigma_min / sigma_max are derivable.
+    Cast jac to fp32 before SVD/det: torch.linalg's MAGMA-batched paths don't
+    support bf16/fp16 on CUDA, and fp32 SVD is more accurate regardless. The
+    matrix being measured is unchanged — only the spectrum measurement is
+    promoted to fp32.
     """
+    jac = jac.to(torch.float32)
     det = torch.linalg.det(jac)
     sv  = torch.linalg.svdvals(jac)         # (B, seq, d), descending
-    return {"det": det, "sigma_ratio": sv[..., 0] / sv[..., -1]}
+    return {"det": det, "sigma_max": sv[..., 0], "sigma_min": sv[..., -1]}

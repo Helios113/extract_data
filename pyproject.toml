@@ -18,8 +18,8 @@ dependencies = [
     "paramiko>=4.0.0",
     "nvidia-ml-py>=13.595.45",
     "xxhash>=3.7.0",
-    "questionary>=2.1.1",
     "textual>=8.2.5",
+    "wandb>=0.18",
 ]
 
 [project.scripts]

@@ -1,0 +1,25 @@
+{
+  "model": "Qwen/Qwen3-1.7B",
+  "device": "cuda",
+  "compute_jacobians": true,
+  "store_full_jacobians": false,
+  "compute_jacobian_stats": true,
+  "jac_chunk": 1024,
+  "sampling": {
+    "n_samples": 32,
+    "seq_len": 64,
+    "batch_size": 4
+  },
+  "source": {
+    "type": "dataset",
+    "name": "wikitext",
+    "config": "wikitext-2-raw-v1",
+    "split": "train",
+    "text_column": "text"
+  },
+  "wandb": {
+    "project": "extract-data",
+    "name": "qwen3-1.7b-wikitext-jac-n32-s64",
+    "tags": ["jacobian", "spectrum-only", "qwen3"]
+  }
+}

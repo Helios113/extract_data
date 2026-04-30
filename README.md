@@ -2,6 +2,64 @@
 
 Extract residual-stream activations (and optionally Jacobians) from transformer models, then estimate intrinsic dimension.
 
+## Changelog
+
+- **Three-flag Jacobian config.** `compute_jacobians` is the master switch;
+  `store_full_jacobians` and `compute_jacobian_stats` independently gate writes.
+  Stats-only mode (no raw J) is now possible — ~300,000× smaller files. See
+  [Config](#config) for the truth table.
+- **Stats schema.** `jacobian_stats` now writes `det`, `sigma_max`, `sigma_min`
+  (was `det`, `sigma_ratio`). κ⁻¹ derivable post-hoc. See [HDF5 layout](#hdf5-layout).
+- **fp32 SVD cast.** `jacobian_stats` upcasts `jac` to fp32 before
+  `torch.linalg.det`/`svdvals` — required for bf16/fp16 models (Llama, Qwen3),
+  no-op for fp32 (gpt2, Pythia). Autograd stays in native dtype; only the SVD
+  measurement is promoted. See [HDF5 layout](#hdf5-layout) note.
+- **Batched Jacobian autograd.** `_jac_single` → `_jac_batched`; sublayer fns
+  take `(B, seq, d)` directly, no per-item Python loop. See [Computation](#computation).
+- **Wandb integration (opt-out).** `wandb.init(config=cfg)` runs at startup
+  unless `"wandb": false` in config. Optional `entity/project/name/tags` block.
+  Adds `wandb` dep in `pyproject.toml`.
+- **SLURM submit script** `run_extract.sbatch`. Per-run dir
+  `runs/<jobid>_<configname>/{config.json,run.h5}`, `WANDB_ENTITY` exported
+  inside the enroot container, `set +x`-guarded HF-token stub for gated models.
+  See [Run](#run).
+- **`configs/precision/`** subfolder with the spectrum-only recipes for gpt2 /
+  llama-3.2-1b / qwen3-1.7b / pythia-160m used in the precision experiment.
+- **Legacy `configs/*_jac.json` migrated.** `gpt2_manifold_ellipsoid_jac.json`,
+  `pythia_jac.json`, `qwen3_jac.json` got `store_full_jacobians: true` added
+  explicitly, preserving old behavior under the renamed flags.
+- **`.gitignore`** now excludes `runs/`, `wandb/`, `logs/` (large H5s, wandb
+  local cache, slurm logs that can leak env via `set -x`).
+
+## Changelog
+
+- **Three-flag Jacobian config.** `compute_jacobians` is the master switch;
+  `store_full_jacobians` and `compute_jacobian_stats` independently gate writes.
+  Stats-only mode (no raw J) is now possible — ~300,000× smaller files. See
+  [Config](#config) for the truth table.
+- **Stats schema.** `jacobian_stats` now writes `det`, `sigma_max`, `sigma_min`
+  (was `det`, `sigma_ratio`). κ⁻¹ derivable post-hoc. See [HDF5 layout](#hdf5-layout).
+- **fp32 SVD cast.** `jacobian_stats` upcasts `jac` to fp32 before
+  `torch.linalg.det`/`svdvals` — required for bf16/fp16 models (Llama, Qwen3),
+  no-op for fp32 (gpt2, Pythia). Autograd stays in native dtype; only the SVD
+  measurement is promoted. See [HDF5 layout](#hdf5-layout) note.
+- **Batched Jacobian autograd.** `_jac_single` → `_jac_batched`; sublayer fns
+  take `(B, seq, d)` directly, no per-item Python loop. See [Computation](#computation).
+- **Wandb integration (opt-out).** `wandb.init(config=cfg)` runs at startup
+  unless `"wandb": false` in config. Optional `entity/project/name/tags` block.
+  Adds `wandb` dep in `pyproject.toml`.
+- **SLURM submit script** `run_extract.sbatch`. Per-run dir
+  `runs/<jobid>_<configname>/{config.json,run.h5}`, `WANDB_ENTITY` exported
+  inside the enroot container, `set +x`-guarded HF-token stub for gated models.
+  See [Run](#run).
+- **`configs/precision/`** subfolder with the spectrum-only recipes for gpt2 /
+  llama-3.2-1b / qwen3-1.7b / pythia-160m used in the precision experiment.
+- **Legacy `configs/*_jac.json` migrated.** `gpt2_manifold_ellipsoid_jac.json`,
+  `pythia_jac.json`, `qwen3_jac.json` got `store_full_jacobians: true` added
+  explicitly, preserving old behavior under the renamed flags.
+- **`.gitignore`** now excludes `runs/`, `wandb/`, `logs/` (large H5s, wandb
+  local cache, slurm logs that can leak env via `set -x`).
+
 ## Setup
 
 ```bash
@@ -53,9 +111,19 @@ uv run python upload.py ls
 
 ## Run
 
+Locally:
+
 ```bash
 python run.py configs/gpt2.json
 ```
+
+Or on SLURM (per-run dir, config copy, wandb wired up):
+
+```bash
+sbatch run_extract.sbatch configs/gpt2.json
+```
+
+See `run_extract.sbatch` for the enroot wrapper, log paths, and `WANDB_ENTITY`.
 
 ## Config
 
@@ -68,6 +136,33 @@ python run.py configs/gpt2.json
   "compute_jacobians": false,
   "compute_jacobian_stats": false,
   "sampling": { "n_samples": 32, "seq_len": 64, "batch_size": 4 },
+  "source": { "type": "dataset", "name": "wikitext", "config": "wikitext-2-raw-v1",
+              "split": "train", "text_column": "text" }
+}
+```
+
+Three flags (all default `false`). `compute_jacobians` is the master switch
+for the autograd Jacobian path; when on, the other two control what gets
+written. Activations (`embed_out`, `final_hidden`, `hidden_out` per sublayer)
+are always saved.
+
+| flag | effect (when on) |
+|------|--------|
+| `compute_jacobians` | run the per-token causal-prefix autograd path |
+| `store_full_jacobians` | persist raw `(seq, d, d)` matrix per sublayer (heavy: 768×768 fp32 ≈ 2.36 MB / token for gpt2) |
+| `compute_jacobian_stats` | run SVD per Jacobian, save `det`, `sigma_max`, `sigma_min` (3 scalars / token, negligible) |
+
+Valid combinations:
+
+| `compute_jacobians` | `store_full_jacobians` | `compute_jacobian_stats` | output |
+|---|---|---|---|
+| false | (ignored) | (ignored) | activations only (single forward, fast) |
+| true | false | false | activations only (Jacobians computed but discarded — useful for benchmarking) |
+| true | true | false | activations + raw J |
+| true | false | true | activations + stats only (~300,000× smaller than raw J) |
+| true | true | true | activations + raw J + stats |
+
+Stats can also be computed offline from saved Jacobians via `hf_jacobian.jacobian_stats(jac)`.
   "source": { ... }
 }
 ```
@@ -131,7 +226,8 @@ All float datasets are gzip-9 + byte-shuffle compressed.
         └── layer_N/  ...
 ```
 
-With `compute_jacobians: true`, each sublayer group also contains:
+With `compute_jacobians: true, store_full_jacobians: true`, each sublayer
+group also contains:
 
 ```
         │   ├── attn/
@@ -139,14 +235,26 @@ With `compute_jacobians: true`, each sublayer group also contains:
         │   │   └── jacobian     (seq, d, d)   [gzip-9 compressed]
 ```
 
-With `compute_jacobian_stats: true` (requires `compute_jacobians`):
+With `compute_jacobians: true, compute_jacobian_stats: true`, each sublayer
+group additionally contains:
 
 ```
-        │   ├── attn/
-        │   │   ├── det          (seq,)   det(J_p)
-        │   │   └── sigma_ratio  (seq,)   max(σ) / min(σ)
+    │   ├── attn/
+    │   │   ├── det          (seq,)     det(J_p)
+    │   │   ├── sigma_max    (seq,)     largest singular value (= ‖J_p‖_2)
+    │   │   └── sigma_min    (seq,)     smallest singular value (= distance to singular)
 ```
 
+`κ = sigma_max / sigma_min` and `κ⁻¹ = sigma_min / sigma_max` are derivable
+post-hoc — used as the precision-safety threshold (the layer is numerically
+invertible at relative precision ε iff `ε < κ⁻¹`).
+
+Note: when the model is loaded in bf16/fp16 (default for Llama-3.2-1B and
+Qwen3-1.7B), the Jacobian comes out in that dtype too, but `jacobian_stats`
+upcasts to fp32 before SVD/det. The matrix being measured is the native-dtype
+Jacobian — only the spectrum measurement runs at fp32 (required by MAGMA, more
+accurate for σ_min anyway). No effect on the analysis: σ_min/σ_max/det are
+intrinsic to the matrix, fp32 just measures them more truthfully.
 ### Source-specific meta attrs
 
 | source_type | extra attrs |
@@ -180,6 +288,7 @@ python plot_id.py <csv_file> [--method twonn|ess_a|ess_b] [--pos 10 49] [--out f
 - Colour = token position, line style = estimator
 - `--method` selects a single estimator; default plots all available
 - Expects columns `twonn`, `ess_a`, `ess_b` as produced by `analyze_id.py`
+
 
 ## Residual stream across one block
 
@@ -242,6 +351,11 @@ Reduce `jac_chunk` if you hit OOM; increase it for fewer kernel launches (faster
 
 
 
-Back project the space?
-Train GPT1
-Dim est of the manifold
+`vmap` over positions is also not possible: each position `p` uses a different-length
+prefix `x[:p+1]`, and `vmap` requires uniform shapes across the batch dimension.
+
+`vmap` over the *data* batch dim B *is* used: `_jac_batched` calls
+`torch.autograd.grad(out[:, p], x_p, grad_outputs=eye[i0:i1].expand(_, B, d),
+is_grads_batched=True)` once per (position, output-chunk), getting B
+independent Jacobians at no extra autograd cost. Speedup is significant for
+larger models; for gpt2 the bottleneck is launch overhead, not compute.

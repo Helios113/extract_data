@@ -1,0 +1,25 @@
+{
+  "model": "gpt2",
+  "device": "cuda",
+  "compute_jacobians": true,
+  "store_full_jacobians": false,
+  "compute_jacobian_stats": true,
+  "jac_chunk": 768,
+  "sampling": {
+    "n_samples": 2,
+    "seq_len": 64,
+    "batch_size": 2
+  },
+  "source": {
+    "type": "dataset",
+    "name": "wikitext",
+    "config": "wikitext-2-raw-v1",
+    "split": "train",
+    "text_column": "text"
+  },
+  "wandb": {
+    "project": "extract-data",
+    "name": "gpt2-wikitext-jac-smoke",
+    "tags": ["smoke", "jacobian"]
+  }
+}

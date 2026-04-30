@@ -12,3 +12,8 @@ wheels/
 /out/**
 upload.cfg
 !/out/.gitkeep
+
+# Run artefacts (large H5s, wandb local cache, slurm logs that can leak env via set -x)
+runs/
+wandb/
+logs/
