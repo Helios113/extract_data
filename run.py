@@ -96,21 +96,46 @@ def iter_dataset_batches(
         yield start, ids_t, None
 
 
+def iter_random_token_batches(
+    src: dict, model, n_samples: int, seq_len: int, batch_size: int, device: str
+) -> Iterator[tuple[int, torch.Tensor, torch.Tensor]]:
+    seed      = src.get("seed", 0)
+    vocab_size = src.get("vocab_size", None)
+
+    emb_weight = model.get_input_embeddings().weight  # (V, d_model)
+    if vocab_size is None:
+        vocab_size = emb_weight.shape[0]
+
+    gen = torch.Generator()
+    gen.manual_seed(seed)
+
+    total  = n_samples * seq_len
+    ids    = torch.randint(0, vocab_size, (total,), generator=gen)          # (total,)
+    embeds = emb_weight[ids].detach().reshape(n_samples, seq_len, -1)       # (n, seq, d)
+    raw_ids = ids.reshape(n_samples, seq_len)                                # (n, seq) int
+
+    for start in range(0, n_samples, batch_size):
+        batch  = embeds[start : start + batch_size].to(device)
+        raw    = raw_ids[start : start + batch_size]
+        yield start, batch, raw
+
+
 def iter_manifold_batches(
-    src: dict, n_samples: int, seq_len: int, batch_size: int, device: str
+    src: dict, n_samples: int, seq_len: int, batch_size: int, d_model: int, device: str
 ) -> Iterator[tuple[int, torch.Tensor, torch.Tensor]]:
     ambient_dim = src.get("ambient_dim", src["manifold_dim"])
     cfg = ManifoldConfig(
-        manifold     = src["manifold"],
-        manifold_dim = src["manifold_dim"],
-        ambient_dim  = ambient_dim,
-        n_samples    = n_samples,
-        seq_len      = seq_len,
-        noise_std    = src.get("noise_std", 0.0),
-        seed         = src.get("seed", 0),
-        scales       = src.get("scales", None),
+        manifold              = src["manifold"],
+        manifold_dim          = src["manifold_dim"],
+        ambient_dim           = ambient_dim,
+        n_samples             = n_samples,
+        seq_len               = seq_len,
+        noise_std             = src.get("noise_std", 0.0),
+        seed                  = src.get("seed", 0),
+        scales                = src.get("scales", None),
+        neighbourhood_radius  = src.get("neighbourhood_radius", None),
     )
-    dataset = ManifoldDataset(cfg, project_dim=src.get("project_dim", None))
+    dataset = ManifoldDataset(cfg, project_dim=src.get("project_dim", d_model))
     loader  = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     print(f"Generating {n_samples} × {seq_len} {cfg.manifold} "
           f"(d={cfg.manifold_dim}, D={cfg.ambient_dim}) samples ...\n")
@@ -156,35 +181,59 @@ def iter_benchmark_batches(
 
 def write_meta(
     f, model_name: str, src_type: str, src: dict,
-    n_samples: int, seq_len: int, batch_size: int, extra: dict
+    n_samples: int, seq_len: int, batch_size: int, extra: dict,
+    weights: str, d_model: int, n_layers: int,
+    compute_jacobians: bool, compute_jacobian_stats: bool,
 ):
     meta = f.create_group("meta")
-    meta.attrs["model"]       = model_name
-    meta.attrs["source_type"] = src_type
-    meta.attrs["n_samples"]   = n_samples
-    meta.attrs["seq_len"]     = seq_len
-    meta.attrs["batch_size"]  = batch_size
+    meta.attrs["model"]                  = model_name
+    meta.attrs["weights"]                = weights
+    meta.attrs["d_model"]                = d_model
+    meta.attrs["n_layers"]               = n_layers
+    meta.attrs["source_type"]            = src_type
+    meta.attrs["n_samples"]              = n_samples
+    meta.attrs["seq_len"]                = seq_len
+    meta.attrs["batch_size"]             = batch_size
+    meta.attrs["compute_jacobians"]      = compute_jacobians
+    meta.attrs["compute_jacobian_stats"] = compute_jacobian_stats
 
     if src_type == "dataset":
         meta.attrs["dataset_name"]   = src["name"]
         meta.attrs["dataset_config"] = src.get("config", "")
         meta.attrs["split"]          = src.get("split", "train")
+        meta.attrs["text_column"]    = src.get("text_column", "text")
+        meta.attrs["tokenizer"]      = model_name
     elif src_type == "manifold":
-        meta.attrs["manifold"]     = src["manifold"]
-        meta.attrs["manifold_dim"] = src["manifold_dim"]
-        meta.attrs["ambient_dim"]  = src["ambient_dim"]
-        meta.attrs["noise_std"]    = src.get("noise_std", 0.0)
+        meta.attrs["manifold"]               = src["manifold"]
+        meta.attrs["manifold_dim"]           = src["manifold_dim"]
+        meta.attrs["ambient_dim"]            = src.get("ambient_dim", src["manifold_dim"])
+        meta.attrs["noise_std"]              = src.get("noise_std", 0.0)
+        meta.attrs["seed"]                   = src.get("seed", 0)
+        meta.attrs["project_dim"]            = src.get("project_dim", d_model)
+        meta.attrs["neighbourhood_radius"]   = src.get("neighbourhood_radius") or 0.0
+        scales = src.get("scales")
+        meta.attrs["scales"] = scales if scales is not None else []
+    elif src_type == "random_tokens":
+        meta.attrs["seed"]       = src.get("seed", 0)
+        meta.attrs["vocab_size"] = src.get("vocab_size", 0)   # 0 = full model vocab
     elif src_type == "benchmark":
         for k, v in extra.items():
             meta.attrs[k] = v
 
 
+def _ds(grp, name: str, data):
+    """Create a compressed dataset. shuffle=True (byte-shuffle) + gzip-9 works well for floats."""
+    grp.create_dataset(name, data=data, compression="gzip", compression_opts=9, shuffle=True)
+
+
 def save_inputs(f, si: int, b: int, src_type: str, batch: torch.Tensor, raw):
     grp = f.require_group(f"samples/{si}")
     if src_type == "dataset":
-        grp.create_dataset("input_ids",       data=batch[b].cpu().numpy())
+        grp.create_dataset("input_ids",      data=batch[b].cpu().numpy())
+    elif src_type == "random_tokens":
+        grp.create_dataset("token_ids",      data=raw[b].numpy())
     elif raw is not None:
-        grp.create_dataset("manifold_points",  data=raw[b].numpy())
+        grp.create_dataset("manifold_points", data=raw[b].numpy())
 
 
 
@@ -249,43 +298,44 @@ def main():
             raise ValueError("source type 'dataset' requires a tokenizer — CustomModel has none; use 'manifold' or 'benchmark' instead")
         batches = iter_dataset_batches(src, tok, n_samples, seq_len, batch_size, device)
     elif src_type == "manifold":
-        batches = iter_manifold_batches(src, n_samples, seq_len, batch_size, device)
+        batches = iter_manifold_batches(src, n_samples, seq_len, batch_size, d_model, device)
     elif src_type == "benchmark":
         batches = iter_benchmark_batches(src, n_samples, seq_len, batch_size, d_model, device)
+    elif src_type == "random_tokens":
+        if model is None:
+            raise ValueError("source type 'random_tokens' requires a loaded model")
+        batches = iter_random_token_batches(src, model, n_samples, seq_len, batch_size, device)
     else:
-        raise ValueError(f"Unknown source type {src_type!r}. Choose: dataset, manifold, benchmark")
+        raise ValueError(f"Unknown source type {src_type!r}. Choose: dataset, manifold, benchmark, random_tokens")
 
     Path(output).parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(output, "w") as f:
-        write_meta(f, model_name, src_type, src, n_samples, seq_len, batch_size, extra_meta)
+        write_meta(
+            f, model_name, src_type, src, n_samples, seq_len, batch_size, extra_meta,
+            weights=weights, d_model=d_model, n_layers=n_layers,
+            compute_jacobians=compute_jacobians, compute_jacobian_stats=compute_jacobian_stats,
+        )
 
         total_steps = n_samples * n_layers * len(sublayers)
         with tqdm.tqdm(total=total_steps, desc="samples") as pbar:
             for offset, batch, _ in batches:
                 B = batch.shape[0]
+                if batch.is_floating_point():
+                    batch = batch.to(dtype=next(model.parameters()).dtype)
 
                 if not compute_jacobians:
                     # single forward — captures everything at once
                     store = capture_all_hidden(model, batch)
                     for b in range(B):
                         sg = f.require_group(f"samples/{offset + b}")
-                        sg.create_dataset(
-                            "embed_out",
-                            data=store[("embed", "out")][b].float().numpy(),
-                        )
-                        sg.create_dataset(
-                            "final_hidden",
-                            data=store[("final", "out")][b].float().numpy(),
-                        )
+                        _ds(sg, "embed_out",    store[("embed", "out")][b].float().numpy())
+                        _ds(sg, "final_hidden", store[("final", "out")][b].float().numpy())
                         for layer_idx in range(n_layers):
                             for sub in sublayers:
                                 if (layer_idx, sub) not in store:
                                     continue
                                 grp = f.require_group(f"samples/{offset + b}/layer_{layer_idx}/{sub}")
-                                grp.create_dataset(
-                                    "hidden_out",
-                                    data=store[(layer_idx, sub)][b].float().numpy(),
-                                )
+                                _ds(grp, "hidden_out", store[(layer_idx, sub)][b].float().numpy())
                     pbar.update(n_layers * len(sublayers) * B)
                 else:
                     # per-(layer, sublayer) forward for Jacobian graph
@@ -302,21 +352,15 @@ def main():
                             stats    = jacobian_stats(jac) if compute_jacobian_stats else None
                             for b in range(B):
                                 grp = f.require_group(f"samples/{offset + b}/layer_{layer_idx}/{sub}")
-                                grp.create_dataset("hidden_out", data=h_out_np[b])
-                                grp.create_dataset("jacobian",   data=jac_np[b], compression="gzip")
+                                _ds(grp, "hidden_out", h_out_np[b])
+                                _ds(grp, "jacobian",   jac_np[b])
                                 if stats is not None:
                                     det_np   = stats.get("det")
                                     sigma_np = stats.get("sigma_ratio")
                                     if det_np is not None:
-                                        grp.create_dataset(
-                                            "det",
-                                            data=det_np.float().cpu().numpy()[b],
-                                        )
+                                        _ds(grp, "det",         det_np.float().cpu().numpy()[b])
                                     if sigma_np is not None:
-                                        grp.create_dataset(
-                                            "sigma_ratio",
-                                            data=sigma_np.float().cpu().numpy()[b],
-                                        )
+                                        _ds(grp, "sigma_ratio", sigma_np.float().cpu().numpy()[b])
                             pbar.update(1)
 
                     # endpoints captured separately in the Jacobian path
@@ -324,14 +368,8 @@ def main():
                     embed_out, final_hidden = capture_endpoints(model, batch)
                     for b in range(B):
                         sg = f.require_group(f"samples/{offset + b}")
-                        sg.create_dataset(
-                            "embed_out",
-                            data=embed_out[b].float().cpu().numpy(),
-                        )
-                        sg.create_dataset(
-                            "final_hidden",
-                            data=final_hidden[b].float().cpu().numpy(),
-                        )
+                        _ds(sg, "embed_out",    embed_out[b].float().cpu().numpy())
+                        _ds(sg, "final_hidden", final_hidden[b].float().cpu().numpy())
 
 
 

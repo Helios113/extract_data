@@ -1,0 +1,16 @@
+{
+  "model": "Qwen/Qwen3-1.7B",
+  "device": "cuda",
+  "weights": "real",
+  "output": "out/qwen3_random_tokens.h5",
+  "compute_jacobians": false,
+  "sampling": {
+    "n_samples": 500,
+    "seq_len": 50,
+    "batch_size": 2
+  },
+  "source": {
+    "type": "random_tokens",
+    "seed": 0
+  }
+}

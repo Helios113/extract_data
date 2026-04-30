@@ -30,6 +30,9 @@ class ManifoldConfig:
     noise_std:    float = 0.0   # isotropic Gaussian noise added after embedding
     seed:         int | None = None
     scales:       list[float] | None = None  # ellipsoid only: d+1 axis lengths
+    neighbourhood_radius: float | None = None  # plane only: if set, each sequence is
+                                               # sampled within an L2 ball of this radius
+                                               # around a random anchor point
 
 
 # ─── random embedding helpers ────────────────────────────────────────────────
@@ -52,6 +55,31 @@ def sample_plane(n: int, d: int, D: int, gen: torch.Generator) -> torch.Tensor:
     assert D >= d, f"ambient_dim ({D}) must be >= manifold_dim ({d}) for plane"
     frame = _ortho_frame(d, D, gen)
     coeffs = torch.rand(n, d, generator=gen) * 2 - 1
+    return _embed(coeffs, frame)
+
+
+def sample_plane_neighbourhood(
+    n_samples: int, seq_len: int, d: int, D: int, radius: float, gen: torch.Generator
+) -> torch.Tensor:
+    """
+    Each sequence is a neighbourhood: one anchor drawn uniform on [-1,1]^d, then
+    seq_len points drawn uniform inside the d-ball of the given radius around it.
+    Returns (n_samples * seq_len, D).
+    """
+    assert D >= d, f"ambient_dim ({D}) must be >= manifold_dim ({d}) for plane"
+    frame = _ortho_frame(d, D, gen)
+
+    # anchors: (n_samples, d)
+    anchors = torch.rand(n_samples, d, generator=gen) * 2 - 1
+
+    # uniform in d-ball via direction × radius^(1/d) scaling
+    dirs = torch.randn(n_samples, seq_len, d, generator=gen)
+    dirs = dirs / dirs.norm(dim=-1, keepdim=True).clamp(min=1e-12)
+    u = torch.rand(n_samples, seq_len, 1, generator=gen).pow(1.0 / d)
+    offsets = dirs * (u * radius)                          # (n_samples, seq_len, d)
+
+    coeffs = anchors.unsqueeze(1) + offsets                # (n_samples, seq_len, d)
+    coeffs = coeffs.reshape(n_samples * seq_len, d)
     return _embed(coeffs, frame)
 
 
@@ -106,6 +134,13 @@ _SAMPLERS = {
 
 def sample_manifold(n: int, cfg: ManifoldConfig, gen: torch.Generator) -> torch.Tensor:
     """Dispatch to the right sampler, apply noise. Returns (n, ambient_dim)."""
+    if cfg.neighbourhood_radius is not None:
+        if cfg.manifold != "plane":
+            raise ValueError("neighbourhood_radius is only supported for manifold='plane'")
+        return sample_plane_neighbourhood(
+            cfg.n_samples, cfg.seq_len, cfg.manifold_dim, cfg.ambient_dim,
+            cfg.neighbourhood_radius, gen,
+        )
     if cfg.manifold == "ellipsoid":
         pts = sample_ellipsoid(n, cfg.manifold_dim, cfg.ambient_dim, cfg.scales, gen)
     elif cfg.manifold in _SAMPLERS:

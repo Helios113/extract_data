@@ -1,0 +1,19 @@
+{
+  "model": "Qwen/Qwen3-1.7B",
+  "device": "cuda",
+  "weights": "real",
+  "output": "out/tests/qwen_real_wikitest.h5",
+  "compute_jacobians": false,
+  "sampling": {
+    "n_samples": 1000,
+    "seq_len": 100,
+    "batch_size": 2
+  },
+  "source": {
+    "type": "dataset",
+    "name": "wikitext",
+    "config": "wikitext-2-raw-v1",
+    "split": "train",
+    "text_column": "text"
+  }
+}
