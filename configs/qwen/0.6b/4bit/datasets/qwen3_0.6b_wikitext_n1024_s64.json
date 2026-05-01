@@ -1,5 +1,5 @@
 {
-  "model": "unsloth/Qwen3-0.6B-unsloth-bnb-4bit",
+  "model": "QuantFactory/Qwen3-0.6B-GGUF::Qwen3-0.6B.Q4_K_M.gguf",
   "device": "cuda",
   "weights": "real",
   "output": "out/qwen/0.6b/4bit/dataset/wikitext_n1024_s64.h5",

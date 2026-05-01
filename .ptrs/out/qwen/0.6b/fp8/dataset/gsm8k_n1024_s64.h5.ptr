@@ -1,0 +1,17 @@
+{
+  "filename": "gsm8k_n1024_s64.h5",
+  "hash": "586e08e752e9aa3a79b5d33c15c68519",
+  "size": 6628327297,
+  "mtime": 1777647870.643036,
+  "uploaded_at": 1777648460.453366,
+  "original_path": "out/qwen/0.6b/fp8/dataset/gsm8k_n1024_s64.h5",
+  "h5_meta": {
+    "model": "Qwen/Qwen3-0.6B-FP8",
+    "weights": "real",
+    "source_type": "dataset",
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100,
+    "status": "complete"
+  }
+}

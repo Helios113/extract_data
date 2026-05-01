@@ -4,5 +4,14 @@
   "size": 13240970466,
   "mtime": 1777629827.5025113,
   "uploaded_at": 1777630612.697214,
-  "original_path": "out/qwen/1.7b/fp8/dataset/gsm8k_n1024_s64.h5"
+  "original_path": "out/qwen/1.7b/fp8/dataset/gsm8k_n1024_s64.h5",
+  "h5_meta": {
+    "model": "Qwen/Qwen3-1.7B-FP8",
+    "weights": "real",
+    "source_type": "dataset",
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100,
+    "status": "complete"
+  }
 }

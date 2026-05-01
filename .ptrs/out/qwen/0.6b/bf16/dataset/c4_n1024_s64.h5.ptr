@@ -1,0 +1,17 @@
+{
+  "filename": "c4_n1024_s64.h5",
+  "hash": "f28a6ac80e446c1f6fa75c1f462cac05",
+  "size": 6648788517,
+  "mtime": 1777647071.5670826,
+  "uploaded_at": 1777647657.864589,
+  "original_path": "out/qwen/0.6b/bf16/dataset/c4_n1024_s64.h5",
+  "h5_meta": {
+    "model": "Qwen/Qwen3-0.6B",
+    "weights": "real",
+    "source_type": "dataset",
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100,
+    "status": "complete"
+  }
+}

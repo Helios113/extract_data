@@ -1,8 +1,17 @@
 {
   "filename": "plane_nonoise_d30_n1024_s64.h5",
-  "hash": "c060a15f0bf725775c3b1c5f846eab31",
-  "size": 5044576041,
-  "mtime": 1777631153.9640937,
-  "uploaded_at": 1777631352.644332,
-  "original_path": "out/gpt2/0.124b/fp32/manifold/plane_nonoise_d30_n1024_s64.h5"
+  "hash": "f36bcc42e56dc481c51139be68a7e4c6",
+  "size": 5044590527,
+  "mtime": 1777645246.4929054,
+  "uploaded_at": 1777647002.049675,
+  "original_path": "out/gpt2/0.124b/fp32/manifold/plane_nonoise_d30_n1024_s64.h5",
+  "h5_meta": {
+    "model": "openai-community/gpt2",
+    "weights": "real",
+    "source_type": "manifold",
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100,
+    "status": "complete"
+  }
 }

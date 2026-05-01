@@ -1,8 +1,0 @@
-{
-  "filename": "gsm8k_n1024_s64.h5",
-  "hash": "96073425b396e1674b113d8d8c2c3fe2",
-  "size": 13239444646,
-  "mtime": 1777627383.3455954,
-  "uploaded_at": 1777627587.259239,
-  "original_path": "out/qwen/1.7b/4bit/dataset/gsm8k_n1024_s64.h5"
-}

@@ -1,0 +1,21 @@
+{
+  "model": "QuantFactory/Qwen3-0.6B-GGUF::Qwen3-0.6B.Q8_0.gguf",
+  "device": "cuda",
+  "weights": "real",
+  "output": "out/qwen/0.6b/8bit/dataset/wikitext_n1024_s64.h5",
+  "compute_jacobians": false,
+  "wandb": false,
+  "sampling": {
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100
+  },
+  "source": {
+    "type": "dataset",
+    "seed": 42,
+    "name": "Salesforce/wikitext",
+    "config": "wikitext-2-raw-v1",
+    "split": "train",
+    "text_column": "text"
+  }
+}

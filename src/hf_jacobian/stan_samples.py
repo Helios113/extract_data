@@ -110,8 +110,8 @@ def lambdas_from_params(
     ----------
     d           : intrinsic dimension (length of output vector)
     R           : patch radius; enforces max|λ| < 1/(2R)
-    entropy     : target Shannon entropy of the |λ| distribution (nats).
-                  Clamped to [0, log(d)].  Ignored when isotropic=True.
+    entropy     : curvature concentration in [0, 1].  0 = one dominant direction,
+                  1 = all directions equal.  Ignored when isotropic=True.
     lambda_min  : minimum magnitude for each |λᵢ| (≥ 0)
     lambda_max  : maximum magnitude for each |λᵢ|; also bounded by 1/(2R)
     isotropic   : if True all |λᵢ| are equal (maximum entropy); entropy arg ignored
@@ -139,10 +139,11 @@ def lambdas_from_params(
         )
 
     if isotropic or d == 1:
-        # all magnitudes equal — maximum entropy (or d=1, entropy is trivially 0)
-        mag = np.full(d, (lambda_min + lambda_max) / 2.0)
+        # all magnitudes equal at lambda_max — isotropic paraboloid
+        mag = np.full(d, lambda_max)
     else:
-        H_target = float(np.clip(entropy, 0.0, np.log(d)))
+        # entropy is normalised in [0, 1]; scale to nats [0, log(d)]
+        H_target = float(np.clip(entropy, 0.0, 1.0)) * np.log(d)
         mag = _sample_magnitudes_at_entropy(d, H_target, lambda_min, lambda_max, rng)
 
     if same_sign:

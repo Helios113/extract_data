@@ -4,5 +4,14 @@
   "size": 13268601601,
   "mtime": 1777627856.71916,
   "uploaded_at": 1777628618.175291,
-  "original_path": "out/qwen/1.7b/bf16/dataset/c4_bg_n1024_s64.h5"
+  "original_path": "out/qwen/1.7b/bf16/dataset/c4_bg_n1024_s64.h5",
+  "h5_meta": {
+    "model": "Qwen/Qwen3-1.7B",
+    "weights": "real",
+    "source_type": "dataset",
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100,
+    "status": "complete"
+  }
 }

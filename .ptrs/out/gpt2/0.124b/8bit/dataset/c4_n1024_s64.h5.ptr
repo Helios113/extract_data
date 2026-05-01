@@ -1,0 +1,17 @@
+{
+  "filename": "c4_n1024_s64.h5",
+  "hash": "2bd0c7a3c222c6dce53a7657753e5b14",
+  "size": 4875277534,
+  "mtime": 1777645143.6467826,
+  "uploaded_at": 1777645536.517946,
+  "original_path": "out/gpt2/0.124b/8bit/dataset/c4_n1024_s64.h5",
+  "h5_meta": {
+    "model": "QuantFactory/gpt2-GGUF::gpt2.Q8_0.gguf",
+    "weights": "real",
+    "source_type": "dataset",
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100,
+    "status": "complete"
+  }
+}

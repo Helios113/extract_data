@@ -1,0 +1,29 @@
+{
+  "model": "Qwen/Qwen3-1.7B",
+  "device": "cuda",
+  "weights": "real",
+  "output": "out/qwen/1.7b/bf16/manifold/Rsmall_k0p2_e0p5_nonoise_d30_n1024_s64.h5",
+  "compute_jacobians": false,
+  "wandb": false,
+  "sampling": {
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100
+  },
+  "source": {
+    "type": "manifold",
+    "manifold_dim": 30,
+    "ambient_dim": 31,
+    "patch_radius": 0.206221,
+    "lambda_params": {
+      "entropy": 0.5,
+      "lambda_min": 0.0,
+      "lambda_max": 0.969832,
+      "isotropic": false,
+      "same_sign": false
+    },
+    "noise_std": 0.0,
+    "seed": 42,
+    "project_dim": 2048
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "model": "EleutherAI/pythia-160m",
+  "device": "cuda",
+  "weights": "random",
+  "output": "out/pythia/0.160b/fp32/manifold/synthetic_weights/Rsmall_k0p2_e0p5_noise0p05_d30_n1024_s64.h5",
+  "compute_jacobians": false,
+  "wandb": false,
+  "sampling": {
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100
+  },
+  "source": {
+    "type": "manifold",
+    "manifold_dim": 30,
+    "ambient_dim": 31,
+    "patch_radius": 0.103948,
+    "lambda_params": {
+      "entropy": 0.5,
+      "lambda_min": 0.0,
+      "lambda_max": 1.924047,
+      "isotropic": false,
+      "same_sign": false
+    },
+    "noise_std": 0.005197,
+    "seed": 42,
+    "project_dim": 768
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "model": "QuantFactory/Qwen3-1.7B-GGUF::Qwen3-1.7B.Q2_K.gguf",
+  "device": "cuda",
+  "weights": "real",
+  "output": "out/qwen/1.7b/2bit/dataset/c4_n1024_s64.h5",
+  "compute_jacobians": false,
+  "wandb": false,
+  "sampling": {
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100
+  },
+  "source": {
+    "type": "dataset",
+    "seed": 42,
+    "name": "allenai/c4",
+    "config": "en",
+    "split": "train",
+    "text_column": "text"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "model": "QuantFactory/pythia-160m-GGUF::pythia-160m.Q4_K_M.gguf",
+  "device": "cuda",
+  "weights": "real",
+  "output": "out/pythia/0.160b/4bit/dataset/gsm8k_n1024_s64.h5",
+  "compute_jacobians": false,
+  "wandb": false,
+  "sampling": {
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100
+  },
+  "source": {
+    "type": "dataset",
+    "seed": 42,
+    "name": "openai/gsm8k",
+    "config": "main",
+    "split": "train",
+    "text_column": [
+      "question",
+      "answer"
+    ]
+  }
+}

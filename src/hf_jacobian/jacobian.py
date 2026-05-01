@@ -1,5 +1,3 @@
-from unsloth import FastLanguageModel
-
 import torch
 from transformers import AutoModel, AutoTokenizer
 
@@ -13,13 +11,25 @@ except Exception:
     pass
 
 
+# QuantFactory GGUF repos carry no tokenizer; map to the canonical base model.
+_GGUF_TOKENIZER = {
+    "QuantFactory/gpt2-GGUF":        "openai-community/gpt2",
+    "QuantFactory/pythia-160m-GGUF": "EleutherAI/pythia-160m",
+    "QuantFactory/Qwen3-0.6B-GGUF":  "Qwen/Qwen3-0.6B",
+    "QuantFactory/Qwen3-1.7B-GGUF":  "Qwen/Qwen3-1.7B",
+}
+
 def load(model_name: str, device: str = "cpu"):
-    # if "unsloth" in model_name:
-    #     model, tok = FastLanguageModel.from_pretrained(model_name, device_map=device)
-    #     return model.eval(), tok
     kwargs = {"device_map": device}
-    model = AutoModel.from_pretrained(model_name, **kwargs)
-    tok = AutoTokenizer.from_pretrained(model_name)
+    if "::" in model_name:
+        repo, gguf_file = model_name.split("::", 1)
+        kwargs["gguf_file"] = gguf_file
+        model = AutoModel.from_pretrained(repo, **kwargs)
+        tok_repo = _GGUF_TOKENIZER.get(repo, repo)
+        tok = AutoTokenizer.from_pretrained(tok_repo)
+    else:
+        model = AutoModel.from_pretrained(model_name, **kwargs)
+        tok = AutoTokenizer.from_pretrained(model_name)
     return model.eval(), tok
 
 def tokenize(tok, text: str, device: str = "cpu") -> torch.Tensor:

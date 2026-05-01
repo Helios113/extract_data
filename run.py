@@ -28,7 +28,7 @@ Source "manifold" — Monge patch hypersurface f(x) = Σ λᵢ xᵢ²:
     "lambdas": [1.0, 0.5, 0.2, 0.1, 0.0],          // explicit, or:
     "lambda_params": {"entropy": 0.8, "lambda_min": 0.0, "lambda_max": 1.0,
                       "isotropic": false, "same_sign": true},
-    "neighbourhood_radius": null, "project_dim": null }
+    "project_dim": null }
   ambient_dim must equal d_model, or set project_dim for a random projection.
 
 Source "benchmark" — skdim BenchmarkManifolds:
@@ -139,7 +139,6 @@ def iter_manifold_batches(
         seq_len               = seq_len,
         noise_std             = src.get("noise_std", 0.0),
         seed                  = src.get("seed", 0),
-        neighbourhood_radius  = src.get("neighbourhood_radius", None),
         lambdas               = src.get("lambdas", None),
         lambda_params         = src.get("lambda_params", None),
         patch_radius          = src.get("patch_radius", 1.0),
@@ -222,7 +221,6 @@ def write_meta(
         meta.attrs["noise_std"]              = src.get("noise_std", 0.0)
         meta.attrs["seed"]                   = src.get("seed", 0)
         meta.attrs["project_dim"]            = src.get("project_dim", d_model)
-        meta.attrs["neighbourhood_radius"]   = src.get("neighbourhood_radius") or 0.0
         meta.attrs["patch_radius"]           = src.get("patch_radius", 1.0)
         lambdas = src.get("lambdas")
         meta.attrs["lambdas"] = lambdas if lambdas is not None else []
@@ -282,6 +280,70 @@ def main():
     if weights not in ("real", "random"):
         raise ValueError(f"'weights' must be 'real' or 'random', got {weights!r}")
 
+    allow_override = cfg.get("allow_override", False)
+
+    def _check_meta_match(meta, source_label):
+        mismatches = []
+        for key, expected in [
+            ("model",       model_name),
+            ("seq_len",     seq_len),
+            ("n_samples",   n_samples),
+            ("source_type", src_type),
+            ("weights",     weights),
+        ]:
+            got = meta.get(key)
+            if got != expected:
+                mismatches.append(f"  {key}: {source_label} has {got!r}, config wants {expected!r}")
+        return mismatches
+
+    def _upload(path):
+        import subprocess
+        result = subprocess.run(
+            ["python", str(Path(__file__).parent / "upload.py"), "push", "-y", path],
+            check=False,
+        )
+        if result.returncode != 0:
+            print(f"Warning: upload failed for {path}")
+
+    # ── remote pointer check (before loading model) ───────────────────────────
+    _ptr_path = Path(__file__).parent / ".ptrs" / (output + ".ptr")
+    if _ptr_path.exists():
+        with open(_ptr_path) as _f:
+            _ptr = json.load(_f)
+        _meta = _ptr.get("h5_meta")
+        if _meta:
+            mismatches = _check_meta_match(_meta, "remote")
+            if mismatches:
+                msg = (
+                    f"Remote file {output!r} exists with different metadata:\n" +
+                    "\n".join(mismatches) +
+                    "\nSet \"allow_override\": true in the config to overwrite it."
+                )
+                if not allow_override:
+                    raise ValueError(msg)
+                print(f"WARNING: overriding remote file — {msg}")
+            else:
+                # ptr exists + meta matches → always complete (we never upload incomplete)
+                print(f"Run already complete on remote (skipping). Output: {output}")
+                return
+        else:
+            print(f"Note: remote pointer exists for {output!r} but has no h5_meta. Proceeding.")
+
+    # ── local complete check (before loading model) ───────────────────────────
+    if Path(output).exists():
+        with h5py.File(output, "r") as existing:
+            m = existing["meta"].attrs
+            mismatches = _check_meta_match(m, "local file")
+            if mismatches:
+                raise ValueError(
+                    f"Existing file {output!r} metadata does not match config:\n" +
+                    "\n".join(mismatches)
+                )
+            if m.get("status") == "complete":
+                print(f"Local run complete. Uploading {output} ...")
+                _upload(output)
+                return
+
     wb = cfg.get("wandb", {})
     if wb is not False:
         import wandb
@@ -292,7 +354,6 @@ def main():
             tags=wb.get("tags"),
             config=cfg,
         )
-
 
     print(f"Loading {model_name!r} on {device} ...")
     if model_name == "custom":
@@ -322,31 +383,11 @@ def main():
         extra_meta["benchmark_true_id"] = int(_bm.truth.loc[src["name"], "Intrinsic Dimension"])
         extra_meta["ambient_dim"]       = int(_bm.generate(n=seq_len)[src["name"]].shape[1])
 
-    # ── resume logic ─────────────────────────────────────────────────────────
+    # ── resume incomplete local file ──────────────────────────────────────────
     skip = 0
     h5_mode = "w"
     if Path(output).exists():
         with h5py.File(output, "r") as existing:
-            m = existing["meta"].attrs
-            mismatches = []
-            for key, expected in [
-                ("model",       model_name),
-                ("seq_len",     seq_len),
-                ("n_samples",   n_samples),
-                ("source_type", src_type),
-                ("weights",     weights),
-            ]:
-                got = m.get(key)
-                if got != expected:
-                    mismatches.append(f"  {key}: file has {got!r}, config wants {expected!r}")
-            if mismatches:
-                raise ValueError(
-                    f"Existing file {output!r} metadata does not match config:\n" +
-                    "\n".join(mismatches)
-                )
-            if m.get("status") == "complete":
-                print(f"Run already complete. Output: {output}")
-                return
             skip = int(existing["embed_out"].shape[0]) if "embed_out" in existing else 0
         print(f"Resuming from sample {skip} / {n_samples}  ({output})")
         h5_mode = "a"
@@ -448,6 +489,9 @@ def main():
         f["meta"].attrs["n_tokens"]  = actual_samples * seq_len
         f["meta"].attrs["status"]    = "complete"
         print(f"\nActual samples: {actual_samples}  |  tokens: {actual_samples * seq_len}")
+
+    print(f"Uploading {output} ...")
+    _upload(output)
 
 
 if __name__ == "__main__":

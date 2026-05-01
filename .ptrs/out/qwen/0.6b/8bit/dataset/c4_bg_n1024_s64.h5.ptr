@@ -1,0 +1,17 @@
+{
+  "filename": "c4_bg_n1024_s64.h5",
+  "hash": "c4174e74b363bb768c13569ca63759cb",
+  "size": 14532845552,
+  "mtime": 1777646891.2268674,
+  "uploaded_at": 1777648108.528613,
+  "original_path": "out/qwen/0.6b/8bit/dataset/c4_bg_n1024_s64.h5",
+  "h5_meta": {
+    "model": "QuantFactory/Qwen3-0.6B-GGUF::Qwen3-0.6B.Q8_0.gguf",
+    "weights": "real",
+    "source_type": "dataset",
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100,
+    "status": "complete"
+  }
+}

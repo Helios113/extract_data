@@ -1,8 +1,17 @@
 {
   "filename": "gsm8k_n1024_s64.h5",
-  "hash": "c672d83f38686b19b5ab556ed128de7b",
-  "size": 4903766579,
-  "mtime": 1777630829.994707,
-  "uploaded_at": 1777631024.64537,
-  "original_path": "out/gpt2/0.124b/fp32/dataset/gsm8k_n1024_s64.h5"
+  "hash": "f5375412dd2e22a817cfd589607fc3fc",
+  "size": 4903780418,
+  "mtime": 1777645171.3608158,
+  "uploaded_at": 1777646725.475931,
+  "original_path": "out/gpt2/0.124b/fp32/dataset/gsm8k_n1024_s64.h5",
+  "h5_meta": {
+    "model": "openai-community/gpt2",
+    "weights": "real",
+    "source_type": "dataset",
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100,
+    "status": "complete"
+  }
 }

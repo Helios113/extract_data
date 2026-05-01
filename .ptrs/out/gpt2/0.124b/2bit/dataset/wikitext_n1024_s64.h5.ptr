@@ -1,0 +1,17 @@
+{
+  "filename": "wikitext_n1024_s64.h5",
+  "hash": "9a5894ca66683055b9386e362c985478",
+  "size": 4868904685,
+  "mtime": 1777644667.5892148,
+  "uploaded_at": 1777645042.96067,
+  "original_path": "out/gpt2/0.124b/2bit/dataset/wikitext_n1024_s64.h5",
+  "h5_meta": {
+    "model": "QuantFactory/gpt2-GGUF::gpt2.Q2_K.gguf",
+    "weights": "real",
+    "source_type": "dataset",
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100,
+    "status": "complete"
+  }
+}

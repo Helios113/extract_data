@@ -1,0 +1,17 @@
+{
+  "filename": "wikitext_n1024_s64.h5",
+  "hash": "c7fac1939e3f380a38bd7d7680ae009d",
+  "size": 6648456043,
+  "mtime": 1777648172.1883955,
+  "uploaded_at": 1777648760.481915,
+  "original_path": "out/qwen/0.6b/fp8/dataset/wikitext_n1024_s64.h5",
+  "h5_meta": {
+    "model": "Qwen/Qwen3-0.6B-FP8",
+    "weights": "real",
+    "source_type": "dataset",
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100,
+    "status": "complete"
+  }
+}

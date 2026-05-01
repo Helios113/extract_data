@@ -1,0 +1,17 @@
+{
+  "filename": "wikitext_n1024_s64.h5",
+  "hash": "a433c948e4e9b5dc4dc136145d03450a",
+  "size": 14486508345,
+  "mtime": 1777645483.1481876,
+  "uploaded_at": 1777646609.45631,
+  "original_path": "out/qwen/0.6b/2bit/dataset/wikitext_n1024_s64.h5",
+  "h5_meta": {
+    "model": "QuantFactory/Qwen3-0.6B-GGUF::Qwen3-0.6B.Q2_K.gguf",
+    "weights": "real",
+    "source_type": "dataset",
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100,
+    "status": "complete"
+  }
+}

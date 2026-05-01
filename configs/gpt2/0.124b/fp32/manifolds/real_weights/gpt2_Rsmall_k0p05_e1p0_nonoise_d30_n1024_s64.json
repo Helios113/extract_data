@@ -1,0 +1,29 @@
+{
+  "model": "openai-community/gpt2",
+  "device": "cuda",
+  "weights": "real",
+  "output": "out/gpt2/0.124b/fp32/manifold/Rsmall_k0p05_e1p0_nonoise_d30_n1024_s64.h5",
+  "compute_jacobians": false,
+  "wandb": false,
+  "sampling": {
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100
+  },
+  "source": {
+    "type": "manifold",
+    "manifold_dim": 30,
+    "ambient_dim": 31,
+    "patch_radius": 0.453835,
+    "lambda_params": {
+      "entropy": 1.0,
+      "lambda_min": 0.0,
+      "lambda_max": 0.110172,
+      "isotropic": true,
+      "same_sign": true
+    },
+    "noise_std": 0.0,
+    "seed": 42,
+    "project_dim": 768
+  }
+}

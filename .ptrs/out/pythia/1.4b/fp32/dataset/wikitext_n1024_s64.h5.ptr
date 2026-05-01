@@ -4,5 +4,14 @@
   "size": 8097002224,
   "mtime": 1777632327.164493,
   "uploaded_at": 1777632809.64899,
-  "original_path": "out/pythia/1.4b/fp32/dataset/wikitext_n1024_s64.h5"
+  "original_path": "out/pythia/1.4b/fp32/dataset/wikitext_n1024_s64.h5",
+  "h5_meta": {
+    "model": "EleutherAI/pythia-1.4b",
+    "weights": "real",
+    "source_type": "dataset",
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100,
+    "status": "complete"
+  }
 }

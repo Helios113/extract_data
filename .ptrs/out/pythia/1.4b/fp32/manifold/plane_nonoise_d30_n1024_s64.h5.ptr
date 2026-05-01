@@ -4,5 +4,14 @@
   "size": 8600548951,
   "mtime": 1777632365.1235385,
   "uploaded_at": 1777632851.097358,
-  "original_path": "out/pythia/1.4b/fp32/manifold/plane_nonoise_d30_n1024_s64.h5"
+  "original_path": "out/pythia/1.4b/fp32/manifold/plane_nonoise_d30_n1024_s64.h5",
+  "h5_meta": {
+    "model": "EleutherAI/pythia-1.4b",
+    "weights": "real",
+    "source_type": "manifold",
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100,
+    "status": "complete"
+  }
 }

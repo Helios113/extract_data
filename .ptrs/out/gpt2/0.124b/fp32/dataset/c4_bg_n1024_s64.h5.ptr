@@ -1,8 +1,17 @@
 {
   "filename": "c4_bg_n1024_s64.h5",
-  "hash": "2e1e1057e41442aefa5d0321a9c2eaa8",
-  "size": 4898680349,
-  "mtime": 1777630862.0207453,
-  "uploaded_at": 1777631072.116677,
-  "original_path": "out/gpt2/0.124b/fp32/dataset/c4_bg_n1024_s64.h5"
+  "hash": "76972431b0d78d0543995ed29cac76b6",
+  "size": 4898696192,
+  "mtime": 1777645190.4958386,
+  "uploaded_at": 1777646741.867248,
+  "original_path": "out/gpt2/0.124b/fp32/dataset/c4_bg_n1024_s64.h5",
+  "h5_meta": {
+    "model": "openai-community/gpt2",
+    "weights": "real",
+    "source_type": "dataset",
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100,
+    "status": "complete"
+  }
 }

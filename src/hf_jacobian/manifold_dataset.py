@@ -22,7 +22,6 @@ from hf_jacobian.stan_samples import (
     check_patch_radius,
     lambdas_from_params,
     sample_monge_patch,
-    sample_monge_patch_neighbourhood,
 )
 
 
@@ -35,8 +34,6 @@ class ManifoldConfig:
     noise_std:    float = 0.0
     seed:         int | None = None
     patch_radius: float = 1.0   # base domain ball radius in R^d
-    neighbourhood_radius: float | None = None  # if set, each sequence is a
-                                               # neighbourhood of this radius
     # curvature — provide exactly one:
     #   lambdas       : explicit list of d coefficients (takes priority)
     #   lambda_params : dict with keys entropy, lambda_min, lambda_max,
@@ -78,16 +75,6 @@ def _resolve_lambdas(cfg: ManifoldConfig) -> list[float]:
 def sample_manifold(n: int, cfg: ManifoldConfig, gen: torch.Generator) -> torch.Tensor:
     """Sample n points from the Monge patch. Returns (n, ambient_dim)."""
     lambdas = _resolve_lambdas(cfg)
-    if cfg.neighbourhood_radius is not None:
-        return sample_monge_patch_neighbourhood(
-            cfg.n_samples, cfg.seq_len,
-            cfg.manifold_dim, cfg.ambient_dim,
-            lambdas,
-            radius=cfg.neighbourhood_radius,
-            R=cfg.patch_radius,
-            noise_std=cfg.noise_std,
-            seed=cfg.seed,
-        )
     return sample_monge_patch(
         n, cfg.manifold_dim, cfg.ambient_dim, lambdas,
         R=cfg.patch_radius, noise_std=cfg.noise_std, seed=cfg.seed,

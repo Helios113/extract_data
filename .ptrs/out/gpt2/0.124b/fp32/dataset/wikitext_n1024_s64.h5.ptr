@@ -1,8 +1,17 @@
 {
   "filename": "wikitext_n1024_s64.h5",
-  "hash": "cd4fadb6d698b0485fb6662e299281e9",
-  "size": 4903943232,
-  "mtime": 1777631147.8100863,
-  "uploaded_at": 1777631349.525708,
-  "original_path": "out/gpt2/0.124b/fp32/dataset/wikitext_n1024_s64.h5"
+  "hash": "ba83fef588fafa0513b0fb3d433eae0f",
+  "size": 4903960735,
+  "mtime": 1777645191.3028395,
+  "uploaded_at": 1777646743.083835,
+  "original_path": "out/gpt2/0.124b/fp32/dataset/wikitext_n1024_s64.h5",
+  "h5_meta": {
+    "model": "openai-community/gpt2",
+    "weights": "real",
+    "source_type": "dataset",
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100,
+    "status": "complete"
+  }
 }

@@ -220,6 +220,27 @@ def _ptr_path_for(local_path):
     return os.path.join(PTRS_DIR, ptr_name(rel))
 
 
+def _read_h5_meta(local_path):
+    """Return the /meta attrs dict from an HDF5 file, or None if not HDF5."""
+    if not local_path.endswith(".h5"):
+        return None
+    try:
+        import h5py
+        import numpy as np
+        def _scalar(v):
+            if isinstance(v, np.ndarray):
+                return v.tolist()
+            if hasattr(v, "item"):
+                return v.item()
+            return v
+        with h5py.File(local_path, "r") as f:
+            if "meta" not in f:
+                return None
+            return {k: _scalar(v) for k, v in f["meta"].attrs.items()}
+    except Exception:
+        return None
+
+
 def write_ptr(local_path, digest, size):
     rel = os.path.relpath(local_path, PROJECT_ROOT)
     ptr_path = _ptr_path_for(local_path)
@@ -232,6 +253,9 @@ def write_ptr(local_path, digest, size):
         "uploaded_at": datetime.now(timezone.utc).timestamp(),
         "original_path": rel,
     }
+    h5_meta = _read_h5_meta(local_path)
+    if h5_meta is not None:
+        data["h5_meta"] = h5_meta
     with open(ptr_path, "w") as f:
         json.dump(data, f, indent=2)
     return ptr_path, data
@@ -507,12 +531,68 @@ def _pull_file(ptr, config):
 
 def cmd_pull(name, config):
     global _board
+
+    if name is None:
+        # no name given — sync all pointers from remote index into .ptrs/
+        print("Fetching remote index...")
+        ptrs = _fetch_ptrs(config)
+        if not ptrs:
+            print("Remote index is empty.")
+            return
+        new, updated = 0, 0
+        for p in ptrs:
+            ptr_path = _ptr_path_for(os.path.join(PROJECT_ROOT, p["original_path"]))
+            existed = os.path.exists(ptr_path)
+            os.makedirs(os.path.dirname(ptr_path), exist_ok=True)
+            with open(ptr_path, "w") as f:
+                json.dump(p, f, indent=2)
+            if existed:
+                updated += 1
+            else:
+                new += 1
+        print(f"Synced {len(ptrs)} pointer(s) to .ptrs/  ({new} new, {updated} updated).")
+        return
+
     ptr = read_ptr(name)
     print(f"Downloading {ptr['filename']} ({ptr['size'] / 1_048_576:.1f} MB)...")
     _board = _Board(1) if _IS_TTY else _LogBoard()
     dest, pulled = _pull_file(ptr, config)
     if pulled:
         print(f"\nPulled to: {dest}")
+
+
+# ---------------------------------------------------------------------------
+# meta -- print /meta attrs stored in a pointer file
+# ---------------------------------------------------------------------------
+
+def cmd_meta(name, config):
+    """Print h5_meta stored in the local ptr, fetching from remote index if absent."""
+    ptr_path = os.path.join(PTRS_DIR, ptr_name(name))
+    if os.path.exists(ptr_path):
+        with open(ptr_path) as f:
+            ptr = json.load(f)
+    else:
+        # not in local .ptrs/ — fetch from remote index
+        print(f"Local ptr not found, checking remote index for {name!r}...")
+        sftp = open_sftp(config)
+        try:
+            remote_idx = remote_index_path(config, name)
+            with sftp.open(remote_idx) as f:
+                ptr = json.load(f)
+        except FileNotFoundError:
+            sys.exit(f"Not found locally or remotely: {name!r}")
+        finally:
+            sftp.close()
+
+    meta = ptr.get("h5_meta")
+    if meta is None:
+        print(f"No h5_meta in pointer for {ptr.get('original_path', name)!r}.")
+        print("Re-push the file to embed metadata in the pointer.")
+        return
+
+    print(f"h5_meta for {ptr['original_path']}  ({ptr['size'] / 1_048_576:.1f} MB):")
+    for k, v in sorted(meta.items()):
+        print(f"  {k}: {v}")
 
 
 # ---------------------------------------------------------------------------
@@ -652,7 +732,8 @@ def cmd_ls(config):
 
 USAGE = """Usage:
   upload.py push [-y] <file|dir>   Upload, write pointers, optionally delete local (-y auto-deletes)
-  upload.py pull <name>            Download file described by .ptrs/<name>[.ptr]
+  upload.py pull [<name>]          Download file described by .ptrs/<name>[.ptr], or sync all pointers from remote
+  upload.py meta <name>            Print /meta attrs stored in the pointer for an H5 file
   upload.py ls                     Browse remote index, pull or delete selected files/folders
   upload.py clean                  Remove local files that are safely backed up remotely
   upload.py apply-overrides        Force-push files marked as conflicting during non-interactive push
@@ -807,9 +888,14 @@ def main():
         cmd_push(args[0], config, auto_delete=auto_delete)
 
     elif cmd == "pull":
+        if len(sys.argv) > 3:
+            sys.exit("Usage: upload.py pull [<name>]")
+        cmd_pull(sys.argv[2] if len(sys.argv) == 3 else None, config)
+
+    elif cmd == "meta":
         if len(sys.argv) != 3:
-            sys.exit("Usage: upload.py pull <name>")
-        cmd_pull(sys.argv[2], config)
+            sys.exit("Usage: upload.py meta <name>")
+        cmd_meta(sys.argv[2], config)
 
     elif cmd == "ls":
         cmd_ls(config)

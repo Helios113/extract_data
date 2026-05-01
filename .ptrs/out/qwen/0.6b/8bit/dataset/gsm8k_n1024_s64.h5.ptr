@@ -1,0 +1,17 @@
+{
+  "filename": "gsm8k_n1024_s64.h5",
+  "hash": "4fcc2aa4e1e4e0c2d86b1f3d85d561ce",
+  "size": 14501003876,
+  "mtime": 1777646886.4568617,
+  "uploaded_at": 1777648084.813947,
+  "original_path": "out/qwen/0.6b/8bit/dataset/gsm8k_n1024_s64.h5",
+  "h5_meta": {
+    "model": "QuantFactory/Qwen3-0.6B-GGUF::Qwen3-0.6B.Q8_0.gguf",
+    "weights": "real",
+    "source_type": "dataset",
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100,
+    "status": "complete"
+  }
+}
