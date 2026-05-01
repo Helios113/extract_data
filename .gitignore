@@ -17,3 +17,4 @@ upload.cfg
 runs/
 wandb/
 logs/
+unsloth_compiled_cache/

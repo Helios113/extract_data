@@ -22,10 +22,13 @@ Source "dataset" — HuggingFace streaming dataset:
   { "type": "dataset", "name": "wikitext", "config": "wikitext-2-raw-v1",
     "split": "train", "text_column": "text" }
 
-Source "manifold" — geometric manifold (plane/sphere/ellipsoid/hyperboloid):
-  { "type": "manifold", "manifold": "sphere", "manifold_dim": 5,
-    "ambient_dim": 768, "noise_std": 0.0, "seed": 0, "scales": null,
-    "project_dim": null }
+Source "manifold" — Monge patch hypersurface f(x) = Σ λᵢ xᵢ²:
+  { "type": "manifold", "manifold_dim": 5, "ambient_dim": 768,
+    "patch_radius": 0.4, "noise_std": 0.0, "seed": 0,
+    "lambdas": [1.0, 0.5, 0.2, 0.1, 0.0],          // explicit, or:
+    "lambda_params": {"entropy": 0.8, "lambda_min": 0.0, "lambda_max": 1.0,
+                      "isotropic": false, "same_sign": true},
+    "neighbourhood_radius": null, "project_dim": null }
   ambient_dim must equal d_model, or set project_dim for a random projection.
 
 Source "benchmark" — skdim BenchmarkManifolds:
@@ -79,7 +82,8 @@ def parse_args():
 # ─── source iterators ────────────────────────────────────────────────────────
 
 def iter_dataset_batches(
-    src: dict, tok, n_samples: int, seq_len: int, batch_size: int, device: str
+    src: dict, tok, n_samples: int, seq_len: int, batch_size: int, device: str,
+    skip: int = 0,
 ) -> Iterator[tuple[int, torch.Tensor, None]]:
     from datasets import load_dataset
     ds = load_dataset(
@@ -92,14 +96,15 @@ def iter_dataset_batches(
         ds = ds.shuffle(seed=src["seed"], buffer_size=10_000)
     chunks = chunk_dataset(tok, ds, src.get("text_column", "text"), seq_len, n_samples)
 
-    for start in range(0, n_samples, batch_size):
+    for start in range(skip, n_samples, batch_size):
         batch_ids = chunks[start : min(start + batch_size, n_samples)]
         ids_t     = torch.tensor(batch_ids, dtype=torch.long).to(device)
         yield start, ids_t, None
 
 
 def iter_random_token_batches(
-    src: dict, model, n_samples: int, seq_len: int, batch_size: int, device: str
+    src: dict, model, n_samples: int, seq_len: int, batch_size: int, device: str,
+    skip: int = 0,
 ) -> Iterator[tuple[int, torch.Tensor, torch.Tensor]]:
     seed      = src.get("seed", 0)
     vocab_size = src.get("vocab_size", None)
@@ -116,40 +121,46 @@ def iter_random_token_batches(
     embeds = emb_weight[ids].detach().reshape(n_samples, seq_len, -1)       # (n, seq, d)
     raw_ids = ids.reshape(n_samples, seq_len)                                # (n, seq) int
 
-    for start in range(0, n_samples, batch_size):
+    for start in range(skip, n_samples, batch_size):
         batch  = embeds[start : min(start + batch_size, n_samples)].to(device)
         raw    = raw_ids[start : min(start + batch_size, n_samples)]
         yield start, batch, raw
 
 
 def iter_manifold_batches(
-    src: dict, n_samples: int, seq_len: int, batch_size: int, d_model: int, device: str
+    src: dict, n_samples: int, seq_len: int, batch_size: int, d_model: int, device: str,
+    skip: int = 0,
 ) -> Iterator[tuple[int, torch.Tensor, torch.Tensor]]:
     ambient_dim = src.get("ambient_dim", src["manifold_dim"])
     cfg = ManifoldConfig(
-        manifold              = src["manifold"],
         manifold_dim          = src["manifold_dim"],
         ambient_dim           = ambient_dim,
         n_samples             = n_samples,
         seq_len               = seq_len,
         noise_std             = src.get("noise_std", 0.0),
         seed                  = src.get("seed", 0),
-        scales                = src.get("scales", None),
         neighbourhood_radius  = src.get("neighbourhood_radius", None),
+        lambdas               = src.get("lambdas", None),
+        lambda_params         = src.get("lambda_params", None),
+        patch_radius          = src.get("patch_radius", 1.0),
     )
     dataset = ManifoldDataset(cfg, project_dim=src.get("project_dim", d_model))
     loader  = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-    print(f"Generating {n_samples} × {seq_len} {cfg.manifold} "
+    print(f"Generating {n_samples} × {seq_len} monge_patch "
           f"(d={cfg.manifold_dim}, D={cfg.ambient_dim}) samples ...\n")
 
     sample_idx = 0
     for batch in loader:
+        if sample_idx < skip:
+            sample_idx += batch.shape[0]
+            continue
         yield sample_idx, batch.to(device), batch.cpu()
         sample_idx += batch.shape[0]
 
 
 def iter_benchmark_batches(
-    src: dict, n_samples: int, seq_len: int, batch_size: int, d_model: int, device: str
+    src: dict, n_samples: int, seq_len: int, batch_size: int, d_model: int, device: str,
+    skip: int = 0,
 ) -> Iterator[tuple[int, torch.Tensor, torch.Tensor]]:
     import skdim
     name = src["name"]
@@ -173,7 +184,7 @@ def iter_benchmark_batches(
 
     print(f"BenchmarkManifold {name!r}: D={D} → projected to d_model={d_model}\n")
 
-    for start in range(0, n_samples, batch_size):
+    for start in range(skip, n_samples, batch_size):
         batch     = seqs[start : min(start + batch_size, n_samples)].to(device)
         raw_batch = raw[start : min(start + batch_size, n_samples)]
         yield start, batch, raw_batch
@@ -206,15 +217,19 @@ def write_meta(
         meta.attrs["text_column"]    = src.get("text_column", "text")
         meta.attrs["tokenizer"]      = model_name
     elif src_type == "manifold":
-        meta.attrs["manifold"]               = src["manifold"]
         meta.attrs["manifold_dim"]           = src["manifold_dim"]
         meta.attrs["ambient_dim"]            = src.get("ambient_dim", src["manifold_dim"])
         meta.attrs["noise_std"]              = src.get("noise_std", 0.0)
         meta.attrs["seed"]                   = src.get("seed", 0)
         meta.attrs["project_dim"]            = src.get("project_dim", d_model)
         meta.attrs["neighbourhood_radius"]   = src.get("neighbourhood_radius") or 0.0
-        scales = src.get("scales")
-        meta.attrs["scales"] = scales if scales is not None else []
+        meta.attrs["patch_radius"]           = src.get("patch_radius", 1.0)
+        lambdas = src.get("lambdas")
+        meta.attrs["lambdas"] = lambdas if lambdas is not None else []
+        lp = src.get("lambda_params")
+        if lp is not None:
+            import json as _json
+            meta.attrs["lambda_params"] = _json.dumps(lp)
     elif src_type == "random_tokens":
         meta.attrs["seed"]       = src.get("seed", 0)
         meta.attrs["vocab_size"] = src.get("vocab_size", 0)   # 0 = full model vocab
@@ -307,29 +322,59 @@ def main():
         extra_meta["benchmark_true_id"] = int(_bm.truth.loc[src["name"], "Intrinsic Dimension"])
         extra_meta["ambient_dim"]       = int(_bm.generate(n=seq_len)[src["name"]].shape[1])
 
-    # build iterator
+    # ── resume logic ─────────────────────────────────────────────────────────
+    skip = 0
+    h5_mode = "w"
+    if Path(output).exists():
+        with h5py.File(output, "r") as existing:
+            m = existing["meta"].attrs
+            mismatches = []
+            for key, expected in [
+                ("model",       model_name),
+                ("seq_len",     seq_len),
+                ("n_samples",   n_samples),
+                ("source_type", src_type),
+                ("weights",     weights),
+            ]:
+                got = m.get(key)
+                if got != expected:
+                    mismatches.append(f"  {key}: file has {got!r}, config wants {expected!r}")
+            if mismatches:
+                raise ValueError(
+                    f"Existing file {output!r} metadata does not match config:\n" +
+                    "\n".join(mismatches)
+                )
+            if m.get("status") == "complete":
+                print(f"Run already complete. Output: {output}")
+                return
+            skip = int(existing["embed_out"].shape[0]) if "embed_out" in existing else 0
+        print(f"Resuming from sample {skip} / {n_samples}  ({output})")
+        h5_mode = "a"
+
+    # ── build iterator ────────────────────────────────────────────────────────
     if src_type == "dataset":
         if tok is None:
             raise ValueError("source type 'dataset' requires a tokenizer — CustomModel has none; use 'manifold' or 'benchmark' instead")
-        batches = iter_dataset_batches(src, tok, n_samples, seq_len, batch_size, device)
+        batches = iter_dataset_batches(src, tok, n_samples, seq_len, batch_size, device, skip=skip)
     elif src_type == "manifold":
-        batches = iter_manifold_batches(src, n_samples, seq_len, batch_size, d_model, device)
+        batches = iter_manifold_batches(src, n_samples, seq_len, batch_size, d_model, device, skip=skip)
     elif src_type == "benchmark":
-        batches = iter_benchmark_batches(src, n_samples, seq_len, batch_size, d_model, device)
+        batches = iter_benchmark_batches(src, n_samples, seq_len, batch_size, d_model, device, skip=skip)
     elif src_type == "random_tokens":
         if model is None:
             raise ValueError("source type 'random_tokens' requires a loaded model")
-        batches = iter_random_token_batches(src, model, n_samples, seq_len, batch_size, device)
+        batches = iter_random_token_batches(src, model, n_samples, seq_len, batch_size, device, skip=skip)
     else:
         raise ValueError(f"Unknown source type {src_type!r}. Choose: dataset, manifold, benchmark, random_tokens")
 
     Path(output).parent.mkdir(parents=True, exist_ok=True)
-    with h5py.File(output, "w") as f:
-        write_meta(
-            f, model_name, src_type, src, n_samples, seq_len, batch_size, extra_meta,
-            weights=weights, d_model=d_model, n_layers=n_layers,
-            compute_jacobians=compute_jacobians, compute_jacobian_stats=compute_jacobian_stats,
-        )
+    with h5py.File(output, h5_mode) as f:
+        if h5_mode == "w":
+            write_meta(
+                f, model_name, src_type, src, n_samples, seq_len, batch_size, extra_meta,
+                weights=weights, d_model=d_model, n_layers=n_layers,
+                compute_jacobians=compute_jacobians, compute_jacobian_stats=compute_jacobian_stats,
+            )
 
         def _gpu_postfix():
             if not torch.cuda.is_available():
@@ -341,8 +386,8 @@ def main():
             util = torch.cuda.utilization(dev)
             return {"gpu": f"{util}%", "vram_free": f"{mem_free:.1f}GB"}
 
-        actual_samples = 0
-        total_steps = n_samples * n_layers * len(sublayers)
+        actual_samples = skip
+        total_steps = (n_samples - skip) * n_layers * len(sublayers)
         with tqdm.tqdm(total=total_steps, desc="samples") as pbar:
             for offset, batch, raw in batches:
                 B = batch.shape[0]
@@ -401,6 +446,7 @@ def main():
 
         f["meta"].attrs["n_samples"] = actual_samples
         f["meta"].attrs["n_tokens"]  = actual_samples * seq_len
+        f["meta"].attrs["status"]    = "complete"
         print(f"\nActual samples: {actual_samples}  |  tokens: {actual_samples * seq_len}")
 
 

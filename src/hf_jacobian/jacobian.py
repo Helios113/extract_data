@@ -1,12 +1,26 @@
+from unsloth import FastLanguageModel
+
 import torch
-from torch.utils._python_dispatch import TorchDispatchMode
 from transformers import AutoModel, AutoTokenizer
+
+# DeepGEMM JIT fails on this machine (no compatible nvcc: 12.8 too old, 13.0
+# has broken 128-bit inline asm). Force Triton fallback before any import
+# touches the flag.
+try:
+    import transformers.integrations.finegrained_fp8 as _fp8
+    _fp8._deepgemm_available = False
+except Exception:
+    pass
 
 
 def load(model_name: str, device: str = "cpu"):
-    model = AutoModel.from_pretrained(model_name).to(device).eval()
+    # if "unsloth" in model_name:
+    #     model, tok = FastLanguageModel.from_pretrained(model_name, device_map=device)
+    #     return model.eval(), tok
+    kwargs = {"device_map": device}
+    model = AutoModel.from_pretrained(model_name, **kwargs)
     tok = AutoTokenizer.from_pretrained(model_name)
-    return model, tok
+    return model.eval(), tok
 
 def tokenize(tok, text: str, device: str = "cpu") -> torch.Tensor:
     return tok(text, return_tensors="pt").input_ids.to(device)
@@ -26,40 +40,6 @@ def _layers(model):
         if hasattr(inner, a)
     )
 
-
-class _InSituJac(TorchDispatchMode):
-    def __init__(self, verbose: bool = False):
-        super().__init__()
-        self.inject_id  = None
-        self.capture_id = None
-        self.x_leaf     = None
-        self.output     = None
-        self.verbose    = verbose
-
-    def __torch_dispatch__(self, func, types, args: tuple = (), kwargs=None):
-        if func != torch.ops.aten.add.Tensor:
-            return func(*args, **(kwargs or {}))
-
-        if self.inject_id is not None or self.capture_id is not None:
-            id0 = id(args[0]) if isinstance(args[0], torch.Tensor) else None
-            id1 = id(args[1]) if isinstance(args[1], torch.Tensor) else None
-
-            if self.inject_id is not None and self.inject_id in (id0, id1):
-                self.inject_id = None
-                result = func(*args, **(kwargs or {}))
-                self.x_leaf = result.detach().clone().requires_grad_(True)
-                if self.verbose:
-                    print(f"  [inject]   x_leaf at add     {tuple(result.shape)}")
-                return self.x_leaf
-
-            if self.capture_id is not None and self.capture_id in (id0, id1):
-                self.capture_id = None
-                self.output = func(*args, **(kwargs or {}))
-                if self.verbose:
-                    print(f"  [capture]  residual add      {tuple(self.output.shape)}")
-                return self.output
-
-        return func(*args, **(kwargs or {}))
 
 
 def _sublayer_fn_gpt2(layer, sublayer):
@@ -183,35 +163,6 @@ def _sublayer_fn(layer, sublayer, model=None):
 
 
 
-class _CaptureAllMode(TorchDispatchMode):
-    """
-    Intercepts every residual add (aten.add.Tensor) during a single forward pass
-    and stores the result keyed by (layer_idx, sublayer).
-
-    Forward hooks on each sublayer module set `pending[key] = id(sublayer_out)`
-    just before the add fires; the dispatch intercept matches on that id and
-    saves the add result (= x + g(LN(x)), the true residual output).
-    """
-    def __init__(self):
-        super().__init__()
-        self.pending: dict[int, tuple] = {}   # tensor_id → store key
-        self.store:   dict[tuple, torch.Tensor] = {}
-
-    def __torch_dispatch__(self, func, types, args: tuple = (), kwargs=None):
-        result = func(*args, **(kwargs or {}))
-        if func == torch.ops.aten.add.Tensor:
-            a0 = args[0] if len(args) > 0 else None
-            a1 = args[1] if len(args) > 1 else None
-            id0 = id(a0) if isinstance(a0, torch.Tensor) else None
-            id1 = id(a1) if isinstance(a1, torch.Tensor) else None
-            for tid in (id0, id1):
-                if tid is not None and tid in self.pending:
-                    key = self.pending.pop(tid)
-                    self.store[key] = result.detach().cpu().clone()
-                    break
-        return result
-
-
 def capture_all_hidden(
     model, inputs
 ) -> dict[tuple, torch.Tensor]:
@@ -221,12 +172,19 @@ def capture_all_hidden(
       ("embed",  "out") → embed_out    (B, seq, d)
       ("final",  "out") → final_hidden (B, seq, d)
 
-    Uses TorchDispatchMode to intercept the residual adds directly, so the
-    captured tensors are the true residual stream values (not post-LN inputs).
-    All tensors are on CPU.
+    Capture strategy (no TorchDispatchMode):
+      - embed_out          : pre-hook on layer 0  → args[0] is the raw residual stream
+      - (i, "attn") out    : pre-hook on ffn mod  → its input is x + attn(LN(x))
+      - (i, "ffn")  out    : post-hook on layer i → output is x + ffn(LN(x))
+      - (i, "block") out   : post-hook on layer i → parallel-residual block output
+      - final_hidden       : post-hook on last layer (same tensor as last ffn out)
+
+    The ffn pre-hook input is the post-attn residual stream (safe: it is x + attn(LN(x)),
+    not a post-LN value — LN is internal to the attn submodule).
+    All tensors are returned on CPU.
     """
     layers  = _layers(model)
-    mode    = _CaptureAllMode()
+    store:  dict[tuple, torch.Tensor] = {}
     handles = []
     arch    = type(model).__name__
 
@@ -238,39 +196,39 @@ def capture_all_hidden(
         )
     attn_getter, ffn_getter = _CAPTURE_MODS[arch]
 
-    # embed_out: residual entering block 0 (pre-LN, so a pre_hook is correct here)
+    # embed_out: residual entering block 0
     def _hook_embed(_mod, args):
-        mode.store[("embed", "out")] = args[0].detach().cpu().clone()
+        store[("embed", "out")] = args[0].detach().cpu().clone()
     handles.append(layers[0].register_forward_pre_hook(_hook_embed))
 
     for i, layer in enumerate(layers):
-        # Mark the sublayer output id so the dispatch mode knows which add to capture
         if arch == "GPTNeoXModel":
-            block_mod = ffn_getter(layer)
-            def _set_block(_mod, _inp, out, _i=i):
+            # Parallel residual — single block add; layer post-hook captures it
+            def _hook_block(_mod, _inp, out, _i=i):
                 a = out[0] if isinstance(out, tuple) else out
-                mode.pending[id(a)] = (_i, "block")
-            handles.append(block_mod.register_forward_hook(_set_block))
+                store[(_i, "block")] = a.detach().cpu().clone()
+            handles.append(layer.register_forward_hook(_hook_block))
         else:
-            attn_mod = attn_getter(layer)
-            def _set_attn(_mod, _inp, out, _i=i):
-                a = out[0] if isinstance(out, tuple) else out
-                mode.pending[id(a)] = (_i, "attn")
-            handles.append(attn_mod.register_forward_hook(_set_attn))
-
+            # attn out = x + attn(LN(x)) = input to the ffn submodule
             ffn_mod = ffn_getter(layer)
-            def _set_ffn(_mod, _inp, out, _i=i):
-                a = out[0] if isinstance(out, tuple) else out
-                mode.pending[id(a)] = (_i, "ffn")
-            handles.append(ffn_mod.register_forward_hook(_set_ffn))
+            def _hook_attn_out(_mod, args, _i=i):
+                x = args[0] if isinstance(args, tuple) else args
+                store[(_i, "attn")] = x.detach().cpu().clone()
+            handles.append(ffn_mod.register_forward_pre_hook(_hook_attn_out))
 
-    # final_hidden: output of the last block (the block's output IS the residual)
+            # ffn out = x + ffn(LN(x)) = layer output
+            def _hook_ffn_out(_mod, _inp, out, _i=i):
+                a = out[0] if isinstance(out, tuple) else out
+                store[(_i, "ffn")] = a.detach().cpu().clone()
+            handles.append(layer.register_forward_hook(_hook_ffn_out))
+
+    # final_hidden: same as last layer's post-hook, already registered above
     def _hook_final(_mod, _inp, out):
         a = out[0] if isinstance(out, tuple) else out
-        mode.store[("final", "out")] = a.detach().cpu().clone()
+        store[("final", "out")] = a.detach().cpu().clone()
     handles.append(layers[-1].register_forward_hook(_hook_final))
 
-    with mode, torch.no_grad():
+    with torch.no_grad():
         if inputs.is_floating_point():
             model(inputs_embeds=inputs)
         else:
@@ -279,7 +237,7 @@ def capture_all_hidden(
     for h in handles:
         h.remove()
 
-    return mode.store
+    return store
 
 
 def capture_endpoints(

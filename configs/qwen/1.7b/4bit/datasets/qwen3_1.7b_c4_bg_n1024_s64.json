@@ -1,20 +1,20 @@
 {
-  "model": "Qwen/Qwen3-1.7B",
+  "model": "unsloth/Qwen3-1.7B-unsloth-bnb-4bit",
   "device": "cuda",
   "weights": "real",
-  "output": "out/qwen/1.7b/dataset/c4_n500_s50.h5",
+  "output": "out/qwen/1.7b/4bit/dataset/c4_bg_n1024_s64.h5",
   "compute_jacobians": false,
   "wandb": false,
   "sampling": {
-    "n_samples": 500,
-    "seq_len": 50,
+    "n_samples": 1024,
+    "seq_len": 64,
     "batch_size": 100
   },
   "source": {
     "type": "dataset",
     "seed": 42,
     "name": "allenai/c4",
-    "config": "en",
+    "config": "bg",
     "split": "train",
     "text_column": "text"
   }

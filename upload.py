@@ -41,7 +41,7 @@ _print_lock = threading.Lock()
 
 def tprint(*args, **kwargs):
     with _print_lock:
-        print(*args, **kwargs)
+        print(*args, flush=True, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -102,12 +102,15 @@ def sftp_mkdir_p(sftp, remote_dir):
 # ANSI cursor movement rewrites that row in place — strictly one line per file.
 # ---------------------------------------------------------------------------
 
+_IS_TTY = sys.stdout.isatty()
+
+
 class _Board:
+    """ANSI in-place progress board for interactive terminals."""
     def __init__(self, n_slots):
         self.n_slots = n_slots
-        self._tid_slot = {}   # thread id -> slot index
+        self._tid_slot = {}
         self._next = 0
-        # print the blank rows we'll overwrite
         sys.stdout.write("\n" * n_slots)
         sys.stdout.flush()
 
@@ -122,7 +125,6 @@ class _Board:
     def _write(self, slot, text):
         rows_up = self.n_slots - slot
         width = get_terminal_size((80, 20)).columns
-        # pad/truncate to exactly one terminal width so nothing spills
         line = f"\r{text}"[:width].ljust(width)
         with _print_lock:
             sys.stdout.write(f"\x1b[{rows_up}A{line}\x1b[{rows_up}B")
@@ -154,7 +156,26 @@ class _Board:
         self._write(slot, f"{label:<24}  done  {size / 1_048_576:.1f} MB")
 
 
-_board: _Board | None = None
+class _LogBoard:
+    """Plain-text progress for non-TTY (SLURM logs). Prints at most once per 10%."""
+    def make_callback(self, label, total):
+        label = label[:40]
+        last_pct = [-1]
+
+        def callback(transferred, _total):
+            pct = int(transferred / total * 100) if total else 0
+            bucket = pct // 10 * 10
+            if bucket > last_pct[0]:
+                last_pct[0] = bucket
+                tprint(f"[{label}] {bucket}%")
+
+        return callback
+
+    def finish(self, label, size):
+        tprint(f"[{label[:40]}] done  {size / 1_048_576:.1f} MB")
+
+
+_board: _Board | _LogBoard | None = None
 
 
 def sftp_put(sftp, local_path, remote_path):
@@ -175,8 +196,8 @@ def sftp_get(sftp, remote_path, local_path):
 # Hashing  (xxh64: ~3-5x faster than MD5, sufficient for dedup/integrity)
 # ---------------------------------------------------------------------------
 
-def hash_file(path, chunk=1 << 20):
-    h = xxhash.xxh64()
+def hash_file(path, chunk=1 << 23):
+    h = xxhash.xxh3_128()
     with open(path, "rb") as f:
         while True:
             buf = f.read(chunk)
@@ -194,16 +215,22 @@ def ptr_name(filename):
     return filename if filename.endswith(".ptr") else filename + ".ptr"
 
 
+def _ptr_path_for(local_path):
+    rel = os.path.relpath(local_path, PROJECT_ROOT)
+    return os.path.join(PTRS_DIR, ptr_name(rel))
+
+
 def write_ptr(local_path, digest, size):
-    os.makedirs(PTRS_DIR, exist_ok=True)
-    name = os.path.basename(local_path)
-    ptr_path = os.path.join(PTRS_DIR, ptr_name(name))
+    rel = os.path.relpath(local_path, PROJECT_ROOT)
+    ptr_path = _ptr_path_for(local_path)
+    os.makedirs(os.path.dirname(ptr_path), exist_ok=True)
     data = {
-        "filename": name,
+        "filename": os.path.basename(local_path),
         "hash": digest,
         "size": size,
         "mtime": os.path.getmtime(local_path),
-        "original_path": os.path.relpath(local_path, PROJECT_ROOT),
+        "uploaded_at": datetime.now(timezone.utc).timestamp(),
+        "original_path": rel,
     }
     with open(ptr_path, "w") as f:
         json.dump(data, f, indent=2)
@@ -212,7 +239,7 @@ def write_ptr(local_path, digest, size):
 
 def load_ptr(local_path):
     """Return cached ptr data if mtime matches, else None."""
-    ptr_path = os.path.join(PTRS_DIR, ptr_name(os.path.basename(local_path)))
+    ptr_path = _ptr_path_for(local_path)
     if not os.path.exists(ptr_path):
         return None
     with open(ptr_path) as f:
@@ -238,15 +265,37 @@ def remote_cache_path(config, digest):
     return f"{config['remote_path']}/cache/{digest[:2]}/{digest[2:]}"
 
 
-def remote_index_path(config, filename):
-    return f"{config['remote_path']}/index/{ptr_name(filename)}"
+def remote_index_path(config, original_path):
+    return f"{config['remote_path']}/index/{ptr_name(original_path)}"
 
 
 # ---------------------------------------------------------------------------
 # Push
 # ---------------------------------------------------------------------------
 
-def _push_file(local_path, config):
+OVERRIDE_FLAG = "_override"
+
+
+def _mark_override(local_path, digest, size):
+    """Write a ptr flagged for later force-push (used when conflict can't be resolved interactively)."""
+    rel = os.path.relpath(local_path, PROJECT_ROOT)
+    ptr_path = _ptr_path_for(local_path)
+    os.makedirs(os.path.dirname(ptr_path), exist_ok=True)
+    data = {
+        "filename": os.path.basename(local_path),
+        "hash": digest,
+        "size": size,
+        "mtime": os.path.getmtime(local_path),
+        "uploaded_at": None,
+        "original_path": rel,
+        OVERRIDE_FLAG: True,
+    }
+    with open(ptr_path, "w") as f:
+        json.dump(data, f, indent=2)
+    return ptr_path
+
+
+def _push_file(local_path, config, force=False):
     """Run in a worker thread. Returns (local_path, ok: bool)."""
     name = os.path.basename(local_path)
     size = os.path.getsize(local_path)
@@ -262,38 +311,42 @@ def _push_file(local_path, config):
 
     sftp = open_sftp(config)
     try:
-        remote_idx = remote_index_path(config, name)
-        sftp_mkdir_p(sftp, f"{config['remote_path']}/index")
+        original_path = os.path.relpath(local_path, PROJECT_ROOT)
+        remote_idx = remote_index_path(config, original_path)
+        sftp_mkdir_p(sftp, os.path.dirname(remote_idx))
 
-        # compare with remote index
-        try:
-            with sftp.open(remote_idx) as f:
-                existing = json.load(f)
-            if existing["hash"] == digest:
-                tprint(f"[{name}] hash matches remote, skipping upload.")
-                # still update local ptr in case it was missing
-                write_ptr(local_path, digest, size)
-                return local_path, True
-            else:
-                # content changed — warn with timestamps and ask twice
-                remote_mtime = existing.get("mtime")
-                local_mtime  = os.path.getmtime(local_path)
-                remote_ts = datetime.fromtimestamp(remote_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if remote_mtime else "unknown"
-                local_ts  = datetime.fromtimestamp(local_mtime,  timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-                with _print_lock:
-                    print(f"\n[{name}] CONFLICT: remote and local have different content.")
-                    print(f"  Remote version: {existing['hash'][:12]}…  modified {remote_ts}")
-                    print(f"  Local  version: {digest[:12]}…  modified {local_ts}")
-                    ans1 = input(f"  Overwrite remote with local version? [y/N] ").strip().lower()
-                    if ans1 != "y":
-                        print(f"  Skipped.")
-                        return local_path, False
-                    ans2 = input(f"  Are you sure? This will replace the remote version from {remote_ts}. [y/N] ").strip().lower()
-                    if ans2 != "y":
-                        print(f"  Skipped.")
-                        return local_path, False
-        except FileNotFoundError:
-            pass  # new file, no conflict
+        if not force:
+            try:
+                with sftp.open(remote_idx) as f:
+                    existing = json.load(f)
+                if existing["hash"] == digest:
+                    tprint(f"[{name}] hash matches remote, skipping upload.")
+                    write_ptr(local_path, digest, size)
+                    return local_path, True
+                else:
+                    remote_mtime = existing.get("mtime")
+                    local_mtime  = os.path.getmtime(local_path)
+                    remote_ts = datetime.fromtimestamp(remote_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if remote_mtime else "unknown"
+                    local_ts  = datetime.fromtimestamp(local_mtime,  timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                    with _print_lock:
+                        print(f"\n[{name}] CONFLICT: remote and local have different content.")
+                        print(f"  Remote version: {existing['hash'][:12]}…  modified {remote_ts}")
+                        print(f"  Local  version: {digest[:12]}…  modified {local_ts}")
+                        try:
+                            ans1 = input("  Overwrite remote with local version? [y/N] ").strip().lower()
+                            if ans1 != "y":
+                                print("  Skipped.")
+                                return local_path, False
+                            ans2 = input(f"  Are you sure? This will replace the remote version from {remote_ts}. [y/N] ").strip().lower()
+                            if ans2 != "y":
+                                print("  Skipped.")
+                                return local_path, False
+                        except EOFError:
+                            ptr_path = _mark_override(local_path, digest, size)
+                            print(f"  Non-interactive: marked for later override ({ptr_path})")
+                            return local_path, False
+            except FileNotFoundError:
+                pass  # new file, no conflict
 
         # upload blob (content-addressed — different hash = new blob, old one preserved)
         cache_remote = remote_cache_path(config, digest)
@@ -304,7 +357,7 @@ def _push_file(local_path, config):
         except FileNotFoundError:
             sftp_put(sftp, local_path, cache_remote)
 
-        # write pointer locally
+        # write pointer locally (clears any override flag)
         ptr_path, ptr_data = write_ptr(local_path, digest, size)
         tprint(f"[{name}] pointer: {ptr_path}")
 
@@ -318,7 +371,7 @@ def _push_file(local_path, config):
     return local_path, True
 
 
-def cmd_push(local_path, config):
+def cmd_push(local_path, config, auto_delete=False):
     if not os.path.exists(local_path):
         sys.exit(f"Path does not exist: {local_path}")
 
@@ -335,7 +388,7 @@ def cmd_push(local_path, config):
     print(f"Starting {workers} parallel worker(s)...")
 
     global _board
-    _board = _Board(workers)
+    _board = _Board(workers) if _IS_TTY else _LogBoard()
 
     uploaded, skipped = [], []
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -347,7 +400,10 @@ def cmd_push(local_path, config):
     print(f"\nPush complete: {len(uploaded)} uploaded, {len(skipped)} skipped.")
 
     if uploaded:
-        ans = input(f"Delete {len(uploaded)} local file(s)? [y/N] ").strip().lower()
+        if auto_delete:
+            ans = "y"
+        else:
+            ans = input(f"Delete {len(uploaded)} local file(s)? [y/N] ").strip().lower()
         if ans == "y":
             for f in uploaded:
                 os.remove(f)
@@ -358,6 +414,66 @@ def cmd_push(local_path, config):
                     except OSError:
                         pass
             print("Deleted.")
+
+
+# ---------------------------------------------------------------------------
+# Apply overrides
+# ---------------------------------------------------------------------------
+
+def cmd_apply_overrides(config):
+    if not os.path.exists(PTRS_DIR):
+        sys.exit("No .ptrs/ directory found.")
+
+    pending = []
+    for dirpath, _, fnames in os.walk(PTRS_DIR):
+        for fname in fnames:
+            if not fname.endswith(".ptr"):
+                continue
+            ptr_path = os.path.join(dirpath, fname)
+            with open(ptr_path) as f:
+                ptr = json.load(f)
+            if ptr.get(OVERRIDE_FLAG):
+                local = os.path.join(PROJECT_ROOT, ptr["original_path"])
+                pending.append((ptr_path, ptr, local))
+
+    if not pending:
+        print("No pending overrides found.")
+        return
+
+    print(f"Pending overrides ({len(pending)}):")
+    for _, ptr, local in pending:
+        exists = "present" if os.path.exists(local) else "MISSING locally"
+        print(f"  {ptr['original_path']}  ({exists})")
+
+    ans1 = input("\nForce-push all and overwrite remote versions? [y/N] ").strip().lower()
+    if ans1 != "y":
+        print("Aborted.")
+        return
+    ans2 = input("Are you sure? Remote versions will be permanently replaced. [y/N] ").strip().lower()
+    if ans2 != "y":
+        print("Aborted.")
+        return
+
+    workers = min(config["workers"], len(pending))
+    global _board
+    _board = _Board(workers) if _IS_TTY else _LogBoard()
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_push_file, local, config, force=True): (ptr_path, ptr, local)
+                   for ptr_path, ptr, local in pending if os.path.exists(local)}
+        for fut in as_completed(futures):
+            ptr_path, ptr, local = futures[fut]
+            _, ok = fut.result()
+            if ok:
+                print(f"  Override applied: {ptr['original_path']}")
+            else:
+                print(f"  Failed: {ptr['original_path']}")
+
+    missing = [(ptr_path, ptr, local) for ptr_path, ptr, local in pending if not os.path.exists(local)]
+    for ptr_path, ptr, local in missing:
+        print(f"  Skipped (local file missing): {ptr['original_path']}")
+
+    print("Done.")
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +509,7 @@ def cmd_pull(name, config):
     global _board
     ptr = read_ptr(name)
     print(f"Downloading {ptr['filename']} ({ptr['size'] / 1_048_576:.1f} MB)...")
-    _board = _Board(1)
+    _board = _Board(1) if _IS_TTY else _LogBoard()
     dest, pulled = _pull_file(ptr, config)
     if pulled:
         print(f"\nPulled to: {dest}")
@@ -407,30 +523,36 @@ def _fetch_ptrs(config):
     sftp = open_sftp(config)
     try:
         index_dir = f"{config['remote_path']}/index"
-        try:
-            entries = sftp.listdir(index_dir)
-        except FileNotFoundError:
-            return []
         ptrs = []
-        for fname in sorted(entries):
-            if not fname.endswith(".ptr"):
-                continue
-            with sftp.open(f"{index_dir}/{fname}") as f:
-                raw = f.read()
-            if b"Mac OS X" in raw:
-                try:
-                    sftp.remove(f"{index_dir}/{fname}")
-                    print(f"  [info] removed macOS metadata ptr: {fname!r}")
-                except OSError as e:
-                    print(f"  [warn] failed to remove macOS metadata ptr {fname!r}: {e}")
-                continue
-            if not raw.strip():
-                continue
+
+        def _walk(remote_dir):
             try:
-                ptrs.append(json.loads(raw))
-            except json.JSONDecodeError:
-                print(f"  [warn] skipping corrupt ptr: {fname!r} contents: {raw!r}")
-                continue
+                entries = sftp.listdir_attr(remote_dir)
+            except FileNotFoundError:
+                return
+            import stat as stat_mod
+            for entry in sorted(entries, key=lambda e: e.filename):
+                remote_path = f"{remote_dir}/{entry.filename}"
+                if stat_mod.S_ISDIR(entry.st_mode):
+                    _walk(remote_path)
+                elif entry.filename.endswith(".ptr"):
+                    with sftp.open(remote_path) as f:
+                        raw = f.read()
+                    if b"Mac OS X" in raw:
+                        try:
+                            sftp.remove(remote_path)
+                            print(f"  [info] removed macOS metadata ptr: {remote_path!r}")
+                        except OSError as e:
+                            print(f"  [warn] failed to remove macOS metadata ptr {remote_path!r}: {e}")
+                        continue
+                    if not raw.strip():
+                        continue
+                    try:
+                        ptrs.append(json.loads(raw))
+                    except json.JSONDecodeError:
+                        print(f"  [warn] skipping corrupt ptr: {remote_path!r} contents: {raw!r}")
+
+        _walk(index_dir)
         return ptrs
     finally:
         sftp.close()
@@ -455,148 +577,9 @@ def _build_tree(ptrs):
     return tree
 
 
-def _browse(tree, config):
-    from textual.app import App, ComposeResult
-    from textual.binding import Binding
-    from textual.widgets import Footer, Header, Label, ListItem, ListView
-
-    class Entry(ListItem):
-        def __init__(self, label: str, kind: str, payload, **kwargs):
-            super().__init__(Label(label), **kwargs)
-            self.kind = kind
-            self.payload = payload
-
-    chosen = []
-
-    class BrowserApp(App):
-        CSS = """
-        ListView { height: 1fr; border: solid $primary; }
-        ListItem { padding: 0 1; }
-        ListItem:hover { background: $boost; }
-        ListItem.selected Label { color: $success; }
-        ListItem.dir Label { color: $warning; }
-        #status { height: 1; background: $surface; padding: 0 1; }
-        """
-        BINDINGS = [
-            Binding("space", "select", "Toggle file"),
-            Binding("p", "pull", "Pull selected"),
-            Binding("q", "quit_app", "Quit"),
-        ]
-
-        def __init__(self, tree):
-            super().__init__()
-            self._tree = tree
-            self._cwd = "."
-            self._selected = set()
-
-        def compose(self) -> ComposeResult:
-            yield Header(show_clock=False)
-            yield ListView()
-            yield Label("", id="status")
-            yield Footer()
-
-        def on_mount(self):
-            self.title = "Remote file browser"
-            self._refresh_list()
-
-        def _refresh_list(self):
-            node = self._tree.get(self._cwd, {"subdirs": set(), "files": []})
-            subdirs = sorted(node["subdirs"])
-            files   = sorted(node["files"], key=lambda p: p["filename"])
-            self.sub_title = f"{self._cwd}/"
-
-            def _safe_id(prefix, raw):
-                slug = "".join(c if c.isalnum() or c in "-_" else "_" for c in raw)
-                return f"{prefix}_{slug}"
-
-            lv = self.query_one(ListView)
-            lv.clear()
-
-            if self._cwd != ".":
-                parent = "/".join(self._cwd.split("/")[:-1]) or "."
-                item = Entry("▲  ../", "dir", parent, id=_safe_id("parent", self._cwd))
-                item.add_class("dir")
-                lv.append(item)
-
-            for d in subdirs:
-                name = d.split("/")[-1]
-                item = Entry(f"▶  {name}/", "dir", d, id=_safe_id("d", d))
-                item.add_class("dir")
-                lv.append(item)
-
-            for p in files:
-                local = os.path.join(PROJECT_ROOT, p["original_path"])
-                present = "✓" if os.path.exists(local) else "·"
-                check = "☑" if p["filename"] in self._selected else "☐"
-                size_mb = p["size"] / 1_048_576
-                label = f"{check} {present}  {p['filename']:<40} {size_mb:7.1f} MB"
-                item = Entry(label, "file", p, id=_safe_id("f", p["original_path"]))
-                if p["filename"] in self._selected:
-                    item.add_class("selected")
-                lv.append(item)
-
-            self._update_status()
-
-        def _update_status(self):
-            n = len(self._selected)
-            msg = (f"  {n} file(s) selected — P to pull · Q to quit"
-                   if n else
-                   "  Enter: open dir · Space: toggle file · P: pull · Q: quit")
-            self.query_one("#status", Label).update(msg)
-
-        def on_list_view_selected(self, event: ListView.Selected):
-            # Enter key — navigate into dirs, toggle files
-            item = event.item
-            if not isinstance(item, Entry):
-                return
-            if item.kind == "dir":
-                self._cwd = item.payload
-                self._selected.clear()
-                self._refresh_list()
-            else:
-                self._toggle_file(item)
-
-        def action_select(self):
-            # Space key — toggle files only
-            lv = self.query_one(ListView)
-            item = lv.highlighted_child
-            if isinstance(item, Entry) and item.kind == "file":
-                self._toggle_file(item)
-
-        def _toggle_file(self, item: "Entry"):
-            p = item.payload
-            name = p["filename"]
-            if name in self._selected:
-                self._selected.discard(name)
-                item.remove_class("selected")
-            else:
-                self._selected.add(name)
-                item.add_class("selected")
-            local = os.path.join(PROJECT_ROOT, p["original_path"])
-            present = "✓" if os.path.exists(local) else "·"
-            check = "☑" if name in self._selected else "☐"
-            size_mb = p["size"] / 1_048_576
-            item.query_one(Label).update(f"{check} {present}  {name:<40} {size_mb:7.1f} MB")
-            self._update_status()
-
-        def action_pull(self):
-            if not self._selected:
-                self._update_status()
-                return
-            # collect ptr dicts from every dir in the tree
-            all_files = [p for node in self._tree.values() for p in node["files"]]
-            nonlocal chosen
-            chosen = [p for p in all_files if p["filename"] in self._selected]
-            self.exit()
-
-        def action_quit_app(self):
-            self.exit()
-
-    BrowserApp(tree).run()
-    return chosen
-
-
 def cmd_ls(config):
+    from browser import browse
+
     print("Fetching remote index...")
     ptrs = _fetch_ptrs(config)
     if not ptrs:
@@ -604,26 +587,57 @@ def cmd_ls(config):
         return
 
     tree = _build_tree(ptrs)
-    chosen = _browse(tree, config)
+    to_pull, to_delete = browse(tree)
 
-    if not chosen:
+    if to_delete:
+        print(f"\nFiles marked for remote deletion ({len(to_delete)}):")
+        for p in to_delete:
+            print(f"  {p['original_path']}  ({p['size'] / 1_048_576:.1f} MB)")
+        ans1 = input("\nPermanently delete these from remote? [y/N] ").strip().lower()
+        if ans1 != "y":
+            print("Aborted.")
+            return
+        ans2 = input("Are you sure? This cannot be undone. [y/N] ").strip().lower()
+        if ans2 != "y":
+            print("Aborted.")
+            return
+        sftp = open_sftp(config)
+        try:
+            for p in to_delete:
+                cache_path = remote_cache_path(config, p["hash"])
+                idx_path   = remote_index_path(config, p["original_path"])
+                for rpath in (cache_path, idx_path):
+                    try:
+                        sftp.remove(rpath)
+                        print(f"  Deleted {rpath}")
+                    except FileNotFoundError:
+                        print(f"  Already gone: {rpath}")
+                local_ptr = _ptr_path_for(os.path.join(PROJECT_ROOT, p["original_path"]))
+                if os.path.exists(local_ptr):
+                    os.remove(local_ptr)
+                    print(f"  Removed local ptr {local_ptr}")
+        finally:
+            sftp.close()
+        print("Deletion complete.")
         return
 
-    # write local pointers for chosen files
-    os.makedirs(PTRS_DIR, exist_ok=True)
-    for p in chosen:
-        ptr_path = os.path.join(PTRS_DIR, ptr_name(p["filename"]))
+    if not to_pull:
+        return
+
+    for p in to_pull:
+        ptr_path = _ptr_path_for(os.path.join(PROJECT_ROOT, p["original_path"]))
+        os.makedirs(os.path.dirname(ptr_path), exist_ok=True)
         with open(ptr_path, "w") as f:
             json.dump(p, f, indent=2)
 
-    workers = min(config["workers"], len(chosen))
-    print(f"Pulling {len(chosen)} file(s) with {workers} worker(s)...")
+    workers = min(config["workers"], len(to_pull))
+    print(f"Pulling {len(to_pull)} file(s) with {workers} worker(s)...")
 
     global _board
-    _board = _Board(workers)
+    _board = _Board(workers) if _IS_TTY else _LogBoard()
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(_pull_file, p, config) for p in chosen]
+        futures = [pool.submit(_pull_file, p, config) for p in to_pull]
         for fut in as_completed(futures):
             dest, pulled = fut.result()
             if pulled:
@@ -637,10 +651,12 @@ def cmd_ls(config):
 # ---------------------------------------------------------------------------
 
 USAGE = """Usage:
-  upload.py push <file|dir>   Upload, write pointers, optionally delete local
-  upload.py pull <name>       Download file described by .ptrs/<name>[.ptr]
-  upload.py ls                Browse remote index and pull selected files
-  upload.py clean             Remove local files that are safely backed up remotely
+  upload.py push [-y] <file|dir>   Upload, write pointers, optionally delete local (-y auto-deletes)
+  upload.py pull <name>            Download file described by .ptrs/<name>[.ptr]
+  upload.py ls                     Browse remote index, pull or delete selected files/folders
+  upload.py clean                  Remove local files that are safely backed up remotely
+  upload.py apply-overrides        Force-push files marked as conflicting during non-interactive push
+  upload.py purge                  Delete remote cache blobs not referenced by any index pointer
 """
 
 
@@ -717,6 +733,62 @@ def cmd_clean(config):
     print("Done.")
 
 
+def cmd_purge(config):
+    """Delete remote cache blobs not referenced by any index pointer."""
+    print("Fetching remote index...")
+    ptrs = _fetch_ptrs(config)
+    referenced = {p["hash"] for p in ptrs}
+    print(f"  {len(referenced)} hashes referenced by index.")
+
+    sftp = open_sftp(config)
+    try:
+        cache_root = f"{config['remote_path']}/cache"
+        try:
+            prefix_dirs = sftp.listdir(cache_root)
+        except FileNotFoundError:
+            print("Cache directory does not exist — nothing to purge.")
+            return
+
+        orphans = []
+        for prefix in sorted(prefix_dirs):
+            prefix_path = f"{cache_root}/{prefix}"
+            try:
+                blobs = sftp.listdir(prefix_path)
+            except IOError:
+                continue
+            for blob in blobs:
+                full_hash = prefix + blob
+                if full_hash not in referenced:
+                    blob_path = f"{prefix_path}/{blob}"
+                    size = sftp.stat(blob_path).st_size
+                    orphans.append((blob_path, full_hash, size))
+
+        if not orphans:
+            print("No orphaned blobs found.")
+            return
+
+        total_mb = sum(s for _, _, s in orphans) / 1_048_576
+        print(f"\nOrphaned blobs ({len(orphans)}, {total_mb:.1f} MB total):")
+        for path, h, size in orphans:
+            print(f"  {h}  {size / 1_048_576:8.1f} MB  {path}")
+
+        ans1 = input("\nDelete all orphaned blobs? [y/N] ").strip().lower()
+        if ans1 != "y":
+            print("Aborted.")
+            return
+        ans2 = input("Are you sure? This cannot be undone. [y/N] ").strip().lower()
+        if ans2 != "y":
+            print("Aborted.")
+            return
+
+        for path, h, _ in orphans:
+            sftp.remove(path)
+            print(f"  Deleted {path}")
+        print(f"Purge complete: {len(orphans)} blobs removed ({total_mb:.1f} MB freed).")
+    finally:
+        sftp.close()
+
+
 def main():
     if len(sys.argv) < 2:
         sys.exit(USAGE)
@@ -726,8 +798,13 @@ def main():
 
     if cmd == "push":
         if len(sys.argv) < 3:
-            sys.exit("Usage: upload.py push <file|dir>")
-        cmd_push(sys.argv[2], config)
+            sys.exit("Usage: upload.py push [-y] <file|dir>")
+        args = sys.argv[2:]
+        auto_delete = "-y" in args
+        args = [a for a in args if a != "-y"]
+        if not args:
+            sys.exit("Usage: upload.py push [-y] <file|dir>")
+        cmd_push(args[0], config, auto_delete=auto_delete)
 
     elif cmd == "pull":
         if len(sys.argv) != 3:
@@ -739,6 +816,12 @@ def main():
 
     elif cmd == "clean":
         cmd_clean(config)
+
+    elif cmd == "apply-overrides":
+        cmd_apply_overrides(config)
+
+    elif cmd == "purge":
+        cmd_purge(config)
 
     else:
         sys.exit(USAGE)

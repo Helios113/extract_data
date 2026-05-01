@@ -1,20 +1,20 @@
 {
-  "model": "Qwen/Qwen3-1.7B",
+  "model": "Qwen/Qwen3-1.7B-FP8",
   "device": "cuda",
   "weights": "real",
-  "output": "out/qwen/1.7b/dataset/wikitext_n500_s50.h5",
+  "output": "out/qwen/1.7b/fp8/dataset/c4_bg_n1024_s64.h5",
   "compute_jacobians": false,
   "wandb": false,
   "sampling": {
-    "n_samples": 500,
-    "seq_len": 50,
+    "n_samples": 1024,
+    "seq_len": 64,
     "batch_size": 100
   },
   "source": {
     "type": "dataset",
     "seed": 42,
-    "name": "Salesforce/wikitext",
-    "config": "wikitext-2-raw-v1",
+    "name": "allenai/c4",
+    "config": "bg",
     "split": "train",
     "text_column": "text"
   }

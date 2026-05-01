@@ -1,169 +1,106 @@
 """
-Geometric manifold dataset for feeding into transformers as latent inputs.
+Manifold dataset backed by the Stan Monge patch sampler.
 
-Each manifold is parameterized by intrinsic dimension d and ambient dimension D.
-Points live in R^D via a random orthonormal embedding of the manifold's native space.
+Every manifold is a Monge patch  f: R^d → R,  f(x) = Σ λᵢ xᵢ²,
+embedded in R^D via a random orthonormal frame.
 
-Manifolds supported:
-  plane       — d-flat, uniform on [-1, 1]^d
-  sphere      — d-sphere S^d (surface of (d+1)-ball), uniform
-  ellipsoid   — d-ellipsoid with configurable axis scales, near-uniform
-  hyperboloid — upper sheet of H^d embedded in R^{d+1}, Gaussian pushforward
+Special cases via lambdas:
+  all zeros  → hyperplane (flat patch, exact uniform on d-ball)
+  all equal  → isotropic paraboloid (local approximation to a sphere)
 
-If ambient_dim != model's d_model, pass project_dim to ManifoldDataset and a
-fixed random projection R^D → R^{project_dim} is applied.
+Curvatures and the validity condition R < 1/(2 max|λ|) are enforced
+at config resolution time; a ValueError stops the run immediately.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
+import numpy as np
 import torch
 import torch.utils.data
+
+from hf_jacobian.stan_samples import (
+    check_patch_radius,
+    lambdas_from_params,
+    sample_monge_patch,
+    sample_monge_patch_neighbourhood,
+)
 
 
 @dataclass
 class ManifoldConfig:
-    manifold:     str            # 'plane' | 'sphere' | 'ellipsoid' | 'hyperboloid'
     manifold_dim: int            # intrinsic dimension d
-    ambient_dim:  int            # embedding space dimension D
-    n_samples:    int            # number of sequences (analogous to n_documents)
-    seq_len:      int            # manifold points per sequence
-    noise_std:    float = 0.0   # isotropic Gaussian noise added after embedding
+    ambient_dim:  int            # embedding space R^D
+    n_samples:    int            # number of sequences
+    seq_len:      int            # points per sequence
+    noise_std:    float = 0.0
     seed:         int | None = None
-    scales:       list[float] | None = None  # ellipsoid only: d+1 axis lengths
-    neighbourhood_radius: float | None = None  # plane only: if set, each sequence is
-                                               # sampled within an L2 ball of this radius
-                                               # around a random anchor point
+    patch_radius: float = 1.0   # base domain ball radius in R^d
+    neighbourhood_radius: float | None = None  # if set, each sequence is a
+                                               # neighbourhood of this radius
+    # curvature — provide exactly one:
+    #   lambdas       : explicit list of d coefficients (takes priority)
+    #   lambda_params : dict with keys entropy, lambda_min, lambda_max,
+    #                   isotropic (bool), same_sign (bool)
+    #   (neither)     : all-zeros → hyperplane
+    lambdas:       list[float] | None = None
+    lambda_params: dict | None = None
 
-
-# ─── random embedding helpers ────────────────────────────────────────────────
 
 def _ortho_frame(source_dim: int, target_dim: int, gen: torch.Generator) -> torch.Tensor:
-    """(target_dim, source_dim) matrix with orthonormal columns: embeds R^source into R^target."""
+    """(target_dim, source_dim) matrix with orthonormal columns."""
     Q, _ = torch.linalg.qr(torch.randn(target_dim, target_dim, generator=gen))
     return Q[:, :source_dim]
 
 
-def _embed(pts: torch.Tensor, frame: torch.Tensor) -> torch.Tensor:
-    """pts: (N, s)  frame: (D, s)  →  (N, D)"""
-    return pts @ frame.T
-
-
-# ─── sampling functions ──────────────────────────────────────────────────────
-
-def sample_plane(n: int, d: int, D: int, gen: torch.Generator) -> torch.Tensor:
-    """Uniform on the d-flat, coefficients in [-1, 1]^d."""
-    assert D >= d, f"ambient_dim ({D}) must be >= manifold_dim ({d}) for plane"
-    frame = _ortho_frame(d, D, gen)
-    coeffs = torch.rand(n, d, generator=gen) * 2 - 1
-    return _embed(coeffs, frame)
-
-
-def sample_plane_neighbourhood(
-    n_samples: int, seq_len: int, d: int, D: int, radius: float, gen: torch.Generator
-) -> torch.Tensor:
-    """
-    Each sequence is a neighbourhood: one anchor drawn uniform on [-1,1]^d, then
-    seq_len points drawn uniform inside the d-ball of the given radius around it.
-    Returns (n_samples * seq_len, D).
-    """
-    assert D >= d, f"ambient_dim ({D}) must be >= manifold_dim ({d}) for plane"
-    frame = _ortho_frame(d, D, gen)
-
-    # anchors: (n_samples, d)
-    anchors = torch.rand(n_samples, d, generator=gen) * 2 - 1
-
-    # uniform in d-ball via direction × radius^(1/d) scaling
-    dirs = torch.randn(n_samples, seq_len, d, generator=gen)
-    dirs = dirs / dirs.norm(dim=-1, keepdim=True).clamp(min=1e-12)
-    u = torch.rand(n_samples, seq_len, 1, generator=gen).pow(1.0 / d)
-    offsets = dirs * (u * radius)                          # (n_samples, seq_len, d)
-
-    coeffs = anchors.unsqueeze(1) + offsets                # (n_samples, seq_len, d)
-    coeffs = coeffs.reshape(n_samples * seq_len, d)
-    return _embed(coeffs, frame)
-
-
-def sample_sphere(n: int, d: int, D: int, gen: torch.Generator) -> torch.Tensor:
-    """Uniform on the d-sphere S^d ⊂ R^{d+1}, embedded in R^D."""
-    assert D >= d + 1, f"ambient_dim ({D}) must be >= manifold_dim+1 ({d+1}) for sphere"
-    frame = _ortho_frame(d + 1, D, gen)
-    raw = torch.randn(n, d + 1, generator=gen)
-    pts = raw / raw.norm(dim=1, keepdim=True)
-    return _embed(pts, frame)
-
-
-def sample_ellipsoid(
-    n: int, d: int, D: int, scales: list[float] | None, gen: torch.Generator
-) -> torch.Tensor:
-    """Near-uniform on the d-ellipsoid (sphere scaled per axis), embedded in R^D.
-
-    scales: d+1 axis lengths (defaults to [1, 1.5, 2, ..., 1 + 0.5*d]).
-    """
-    assert D >= d + 1, f"ambient_dim ({D}) must be >= manifold_dim+1 ({d+1}) for ellipsoid"
-    frame = _ortho_frame(d + 1, D, gen)
-    raw = torch.randn(n, d + 1, generator=gen)
-    unit = raw / raw.norm(dim=1, keepdim=True)
-
-    if scales is None:
-        scales = [1.0 + 0.5 * i for i in range(d + 1)]
-    scale_t = torch.tensor(scales[: d + 1], dtype=torch.float32)
-    pts = unit * scale_t
-    return _embed(pts, frame)
-
-
-def sample_hyperboloid(n: int, d: int, D: int, gen: torch.Generator) -> torch.Tensor:
-    """Upper sheet of H^d: x_{d+1}^2 - ||x_{1:d}||^2 = 1, x_{d+1} > 0.
-
-    Gaussian pushforward: v ~ N(0, I_d), x = (v, sqrt(1+||v||^2)).
-    This is not the uniform Riemannian measure but is geometrically correct.
-    """
-    assert D >= d + 1, f"ambient_dim ({D}) must be >= manifold_dim+1 ({d+1}) for hyperboloid"
-    frame = _ortho_frame(d + 1, D, gen)
-    v = torch.randn(n, d, generator=gen)
-    t = (1 + v.pow(2).sum(dim=1, keepdim=True)).sqrt()
-    pts = torch.cat([v, t], dim=1)
-    return _embed(pts, frame)
-
-
-_SAMPLERS = {
-    "plane":       sample_plane,
-    "sphere":      sample_sphere,
-    "hyperboloid": sample_hyperboloid,
-}
+def _resolve_lambdas(cfg: ManifoldConfig) -> list[float]:
+    """Resolve lambdas from config and enforce the injectivity-radius bound."""
+    d, R = cfg.manifold_dim, cfg.patch_radius
+    if cfg.lambdas is not None:
+        lambdas = cfg.lambdas
+    elif cfg.lambda_params is not None:
+        p = cfg.lambda_params
+        lambdas = lambdas_from_params(
+            d=d,
+            R=R,
+            entropy=p["entropy"],
+            lambda_min=p["lambda_min"],
+            lambda_max=p["lambda_max"],
+            isotropic=p.get("isotropic", False),
+            same_sign=p.get("same_sign", True),
+            rng=np.random.default_rng(cfg.seed),
+        )
+    else:
+        lambdas = [0.0] * d
+    check_patch_radius(lambdas, R)
+    return lambdas
 
 
 def sample_manifold(n: int, cfg: ManifoldConfig, gen: torch.Generator) -> torch.Tensor:
-    """Dispatch to the right sampler, apply noise. Returns (n, ambient_dim)."""
+    """Sample n points from the Monge patch. Returns (n, ambient_dim)."""
+    lambdas = _resolve_lambdas(cfg)
     if cfg.neighbourhood_radius is not None:
-        if cfg.manifold != "plane":
-            raise ValueError("neighbourhood_radius is only supported for manifold='plane'")
-        return sample_plane_neighbourhood(
-            cfg.n_samples, cfg.seq_len, cfg.manifold_dim, cfg.ambient_dim,
-            cfg.neighbourhood_radius, gen,
+        return sample_monge_patch_neighbourhood(
+            cfg.n_samples, cfg.seq_len,
+            cfg.manifold_dim, cfg.ambient_dim,
+            lambdas,
+            radius=cfg.neighbourhood_radius,
+            R=cfg.patch_radius,
+            noise_std=cfg.noise_std,
+            seed=cfg.seed,
         )
-    if cfg.manifold == "ellipsoid":
-        pts = sample_ellipsoid(n, cfg.manifold_dim, cfg.ambient_dim, cfg.scales, gen)
-    elif cfg.manifold in _SAMPLERS:
-        pts = _SAMPLERS[cfg.manifold](n, cfg.manifold_dim, cfg.ambient_dim, gen)
-    else:
-        raise ValueError(f"Unknown manifold {cfg.manifold!r}. Choose from: plane, sphere, ellipsoid, hyperboloid")
+    return sample_monge_patch(
+        n, cfg.manifold_dim, cfg.ambient_dim, lambdas,
+        R=cfg.patch_radius, noise_std=cfg.noise_std, seed=cfg.seed,
+    )
 
-    if cfg.noise_std > 0:
-        pts = pts + torch.randn_like(pts, generator=gen) * cfg.noise_std
-
-    return pts
-
-
-# ─── Dataset ─────────────────────────────────────────────────────────────────
 
 class ManifoldDataset(torch.utils.data.Dataset):
     """
-    Each item is a (seq_len, ambient_dim) tensor of manifold points.
-    Batching via DataLoader produces (B, seq_len, ambient_dim) — directly usable
-    as inputs_embeds in a transformer.
+    Each item is a (seq_len, ambient_dim) tensor of Monge patch points.
+    Batching via DataLoader gives (B, seq_len, ambient_dim).
 
-    If project_dim is set, a fixed random projection is applied so items are
-    (seq_len, project_dim). Use this when ambient_dim != model's d_model.
+    If project_dim is set, a fixed random orthonormal projection
+    R^ambient_dim → R^project_dim is applied after sampling.
     """
 
     def __init__(self, cfg: ManifoldConfig, project_dim: int | None = None):
@@ -171,22 +108,15 @@ class ManifoldDataset(torch.utils.data.Dataset):
         if cfg.seed is not None:
             gen.manual_seed(cfg.seed)
 
-        total = cfg.n_samples * cfg.seq_len
-        pts = sample_manifold(total, cfg, gen)  # (total, D)
+        pts = sample_manifold(cfg.n_samples * cfg.seq_len, cfg, gen)  # (N, D)
 
         if project_dim is not None and project_dim != cfg.ambient_dim:
-            # Fixed random orthonormal projection R^D → R^{project_dim}
             proj = _ortho_frame(
                 min(cfg.ambient_dim, project_dim),
                 max(cfg.ambient_dim, project_dim),
                 gen,
             )
-            if project_dim < cfg.ambient_dim:
-                # project down: (total, D) @ (D, project_dim)
-                pts = pts @ proj
-            else:
-                # embed up: (total, D) @ (D, project_dim)
-                pts = pts @ proj.T
+            pts = pts @ proj if project_dim < cfg.ambient_dim else pts @ proj.T
 
         self.data = pts.reshape(cfg.n_samples, cfg.seq_len, -1)
         self.cfg = cfg
@@ -195,4 +125,4 @@ class ManifoldDataset(torch.utils.data.Dataset):
         return self.cfg.n_samples
 
     def __getitem__(self, i: int) -> torch.Tensor:
-        return self.data[i]  # (seq_len, out_dim)
+        return self.data[i]
