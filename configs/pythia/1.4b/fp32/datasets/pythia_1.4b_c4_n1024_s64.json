@@ -1,0 +1,21 @@
+{
+  "model": "EleutherAI/pythia-1.4b",
+  "device": "cuda",
+  "weights": "real",
+  "output": "out/pythia/1.4b/fp32/dataset/c4_n1024_s64.h5",
+  "compute_jacobians": false,
+  "wandb": false,
+  "sampling": {
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100
+  },
+  "source": {
+    "type": "dataset",
+    "seed": 42,
+    "name": "allenai/c4",
+    "config": "en",
+    "split": "train",
+    "text_column": "text"
+  }
+}

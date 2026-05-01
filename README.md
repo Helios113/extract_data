@@ -374,3 +374,23 @@ prefix `x[:p+1]`, and `vmap` requires uniform shapes across the batch dimension.
 is_grads_batched=True)` once per (position, output-chunk), getting B
 independent Jacobians at no extra autograd cost. Speedup is significant for
 larger models; for gpt2 the bottleneck is launch overhead, not compute.
+
+
+
+<!-- TODO -->
+
+Make all models quantised as well
+
+Make sampling configs and run
+
+Make random weights a thing
+
+
+<!-- Back project from embedding -->
+
+<!-- Train GPT1 with post norm -->
+<!-- Check GPT1 with whatever -->
+<!-- Plots the main figure-->
+<!-- Writing -- the new proof -->
+
+

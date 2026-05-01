@@ -1,0 +1,8 @@
+{
+  "filename": "wikitext_n1024_s64.h5",
+  "hash": "e1d60b846eae661473623ae5c13e1da1",
+  "size": 13267649993,
+  "mtime": 1777627812.2841072,
+  "uploaded_at": 1777628579.722149,
+  "original_path": "out/qwen/1.7b/4bit/dataset/wikitext_n1024_s64.h5"
+}

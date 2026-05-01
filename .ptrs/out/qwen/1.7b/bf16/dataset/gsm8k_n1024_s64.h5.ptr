@@ -1,0 +1,8 @@
+{
+  "filename": "gsm8k_n1024_s64.h5",
+  "hash": "7603b86a5d9e3bde1683a1e83a91a8ac",
+  "size": 13241000472,
+  "mtime": 1777628799.0372844,
+  "uploaded_at": 1777629590.303073,
+  "original_path": "out/qwen/1.7b/bf16/dataset/gsm8k_n1024_s64.h5"
+}
