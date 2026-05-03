@@ -77,6 +77,7 @@ def parse_args():
     p.add_argument("output", nargs="?", default=None,
                    help="Output HDF5 path (overrides config 'output' key)")
     p.add_argument("--device", default=None, help="Override device from config")
+    p.add_argument("--no-upload", action="store_true", help="Skip upload after run")
     return p.parse_args()
 
 
@@ -303,6 +304,8 @@ def main():
         return mismatches
 
     def _upload(path):
+        if args.no_upload:
+            return
         import subprocess
         result = subprocess.run(
             ["python", str(Path(__file__).parent / "upload.py"), "push", "-y", path],
@@ -462,13 +465,19 @@ def main():
                         for sub in sublayers:
                             if (layer_idx, sub) not in store:
                                 continue
-                            h_B = store[(layer_idx, sub)]          # (B, seq, d)
+                            h_B = store[(layer_idx, sub)].to(device)  # (B, seq, d)
                             _ds_append(f, f"layer_{layer_idx}/{sub}/hidden_out",
                                        h_B.float().cpu().numpy())
 
                             fn = _sublayer_fn(layer, sub, model=model)
-                            # HF models take (B, seq, d); wrap to (seq, d) for probe closure
+                            # HF models take (B, seq, d); wrap to (seq, d) for probe closure.
+                            # JVP only supports float32+; temporarily upcast layer for probes.
                             from hf_jacobian.custom_model import CustomModel as _CM
+                            _model_dtype = next(model.parameters()).dtype
+                            _probe_dtype = torch.float32
+                            _needs_upcast = _model_dtype in (torch.float16, torch.bfloat16)
+                            if _needs_upcast:
+                                layer.float()
                             if not isinstance(model, _CM):
                                 _fn = lambda x, _f=fn: _f(x.unsqueeze(0)).squeeze(0)
                             else:
@@ -477,7 +486,7 @@ def main():
                             smin_batch = []
                             inv_batch  = []
                             for b in range(B):
-                                h = h_B[b]                         # (seq, d)
+                                h = h_B[b].to(_probe_dtype)        # (seq, d)
                                 smin_seq = []
                                 inv_seq  = []
                                 for p in range(h.shape[0]):
@@ -488,12 +497,15 @@ def main():
                                         return _f(full)[_p]
                                     x_p   = h[p].detach().clone()
                                     Jv_fn = lambda v, _fl=f_loc, _x=x_p: _jvp(_fl, (_x,), (v,))[1]
-                                    res   = check_invertibility(Jv_fn, n=d_model, m=approx_sigma_probes)
+                                    res   = check_invertibility(Jv_fn, n=d_model, m=approx_sigma_probes,
+                                                                device=device, dtype=_probe_dtype)
                                     smin_seq.append(res.sigma_min_estimate)
                                     inv_seq.append(float(res.is_invertible))
                                 smin_batch.append(smin_seq)
                                 inv_batch.append(inv_seq)
 
+                            if _needs_upcast:
+                                layer.to(_model_dtype)
                             _ds_append(f, f"layer_{layer_idx}/{sub}/approx_sigma_min",
                                        np.array(smin_batch, dtype=np.float32))
                             _ds_append(f, f"layer_{layer_idx}/{sub}/is_invertible",

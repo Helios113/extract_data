@@ -1,0 +1,30 @@
+{
+  "filename": "Rsmall_k0p4_e0p5_noise0p2_d30_n1024_s64.h5",
+  "hash": "f295434c178904f57323e8cff5e5471f",
+  "size": 5086899647,
+  "mtime": 1777669928.0783494,
+  "uploaded_at": 1777670347.460328,
+  "original_path": "out/gpt2/0.124b/fp32/manifold/synthetic_weights/Rsmall_k0p4_e0p5_noise0p2_d30_n1024_s64.h5",
+  "h5_meta": {
+    "ambient_dim": 31,
+    "batch_size": 100,
+    "compute_jacobian_stats": false,
+    "compute_jacobians": false,
+    "d_model": 768,
+    "lambda_params": "{\"entropy\": 0.5, \"lambda_min\": 0.0, \"lambda_max\": 0.881378, \"isotropic\": false, \"same_sign\": false}",
+    "lambdas": [],
+    "manifold_dim": 30,
+    "model": "openai-community/gpt2",
+    "n_layers": 12,
+    "n_samples": 1024,
+    "n_tokens": 65536,
+    "noise_std": 0.090767,
+    "patch_radius": 0.453835,
+    "project_dim": 768,
+    "seed": 42,
+    "seq_len": 64,
+    "source_type": "manifold",
+    "status": "complete",
+    "weights": "random"
+  }
+}

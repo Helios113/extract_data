@@ -1,0 +1,25 @@
+{
+  "model": "Qwen/Qwen3-0.6B",
+  "device": "cuda",
+  "weights": "random",
+  "output": "out/tests/qwen3_approx_sigma_test.h5",
+  "compute_jacobians": false,
+  "compute_approx_sigma": true,
+  "approx_sigma_probes": 16,
+  "sampling": {
+    "n_samples": 2,
+    "seq_len": 4,
+    "batch_size": 2
+  },
+  "source": {
+    "type": "manifold",
+    "manifold": "plane",
+    "manifold_dim": 10,
+    "ambient_dim": 11,
+    "project_dim": 1024,
+    "noise_std": 0.0,
+    "seed": 0,
+    "scales": null
+  },
+  "wandb": false
+}

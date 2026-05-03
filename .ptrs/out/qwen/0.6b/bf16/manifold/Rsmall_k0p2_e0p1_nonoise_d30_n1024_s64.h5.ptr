@@ -1,0 +1,30 @@
+{
+  "filename": "Rsmall_k0p2_e0p1_nonoise_d30_n1024_s64.h5",
+  "hash": "dbf499ffb21f2f58f98d66fecd688964",
+  "size": 6907496667,
+  "mtime": 1777675125.2625494,
+  "uploaded_at": 1777675719.417854,
+  "original_path": "out/qwen/0.6b/bf16/manifold/Rsmall_k0p2_e0p1_nonoise_d30_n1024_s64.h5",
+  "h5_meta": {
+    "ambient_dim": 31,
+    "batch_size": 100,
+    "compute_jacobian_stats": false,
+    "compute_jacobians": false,
+    "d_model": 1024,
+    "lambda_params": "{\"entropy\": 0.1, \"lambda_min\": 0.0, \"lambda_max\": 1.631888, \"isotropic\": false, \"same_sign\": false}",
+    "lambdas": [],
+    "manifold_dim": 30,
+    "model": "Qwen/Qwen3-0.6B",
+    "n_layers": 28,
+    "n_samples": 1024,
+    "n_tokens": 65536,
+    "noise_std": 0.0,
+    "patch_radius": 0.122557,
+    "project_dim": 1024,
+    "seed": 42,
+    "seq_len": 64,
+    "source_type": "manifold",
+    "status": "complete",
+    "weights": "real"
+  }
+}

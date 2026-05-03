@@ -1,0 +1,24 @@
+{
+  "filename": "random_tokens_n1024_s64.h5",
+  "hash": "e06a880e7517ddbeba357f8287131b6c",
+  "size": 4902151752,
+  "mtime": 1777662862.6719208,
+  "uploaded_at": 1777663235.890018,
+  "original_path": "out/gpt2/0.124b/fp32/dataset/random_tokens_n1024_s64.h5",
+  "h5_meta": {
+    "batch_size": 100,
+    "compute_jacobian_stats": false,
+    "compute_jacobians": false,
+    "d_model": 768,
+    "model": "openai-community/gpt2",
+    "n_layers": 12,
+    "n_samples": 1024,
+    "n_tokens": 65536,
+    "seed": 42,
+    "seq_len": 64,
+    "source_type": "random_tokens",
+    "status": "complete",
+    "vocab_size": 0,
+    "weights": "real"
+  }
+}
