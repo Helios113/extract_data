@@ -1,7 +1,7 @@
 import torch, time, sys
 sys.path.insert(0, 'src')
 import hf_jacobian as hj
-from hf_jacobian.jacobian import _layers, _sublayer_fn, capture_all_hidden, _jac_attn, _jac_ffn, _jac_block
+from hf_jacobian.jacobian import _layers, _sublayer_fn, capture_all_hidden, _jac_attn, _jac_ffn
 from test_jac2 import check_invertibility
 from torch.func import jvp
 
@@ -257,56 +257,37 @@ def find_singular_input(sublayer="attn", n_steps=200, lr=0.05, seed=0):
     print(f"\nFinal sigma_min: {sv[-1].item():.6f}  (0 = singular)")
 
 
-def correlate_sigma_min(model_name="gpt2", n_pos=8, n_probes=128, seed=0):
+def correlate_sigma_min(n_pos=8, n_probes=128, seed=0):
     """Pearson correlation between exact sigma_min (SVD) and approx sigma_min (JVP probes).
 
     Sweeps all sublayers across all layers and n_pos token positions on a
     single random sequence. Prints a per-sublayer table and an overall correlation.
     """
     torch.manual_seed(seed)
-    model, tok = hj.load(model_name)
-    layers     = _layers(model)
-    n_layers   = len(layers)
-    d_model    = next(model.parameters()).shape[-1]
+    cfg    = hj.Config(d_model=D_MODEL, n_heads=4, n_layers=8, vocab_size=256, mlp_expand=4)
+    model  = hj.CustomModel(cfg).eval()
+    layers = _layers(model)
+    n_layers = len(layers)
 
-    text   = "The quick brown fox jumps over the lazy dog and then keeps running"
-    inputs = hj.tokenize(tok, text)
-    seq    = inputs.shape[-1]
+    inputs = torch.randint(0, cfg.vocab_size, (max(n_pos, 1),))
     store  = capture_all_hidden(model, inputs)
 
-    # GPT-2 sublayer fns take (B, seq, d); wrap to (seq, d) for jac utilities.
-    from hf_jacobian.custom_model import CustomModel
-    is_custom = isinstance(model, CustomModel)
-
-    def wrap_fn(fn):
-        if is_custom:
-            return fn
-        return lambda x: fn(x.unsqueeze(0)).squeeze(0)
-
-    n_pos = min(n_pos, seq)
+    n_pos = min(n_pos, inputs.shape[0])
     exact_all  = []
     approx_all = []
 
-    print(f"model={model_name}  d={d_model}  seq={seq}  layers={n_layers}  n_probes={n_probes}\n")
+    print(f"d={D_MODEL}  seq={inputs.shape[0]}  layers={n_layers}  n_probes={n_probes}\n")
     hdr = f"{'layer':>5} {'sub':>4} {'pos':>3}  {'exact_smin':>12} {'approx_smin':>12}  {'ratio':>8}"
     print(hdr)
     print("-" * len(hdr))
 
-    arch = type(model).__name__
-    sublayers = ("block",) if arch == "GPTNeoXModel" else ("attn", "ffn")
-
     for layer_idx in range(n_layers):
-        for sublayer in sublayers:
+        for sublayer in ("attn", "ffn"):
             h   = store[(layer_idx, sublayer)][0]   # (seq, d)
-            fn  = wrap_fn(_sublayer_fn(layers[layer_idx], sublayer, model=model))
+            fn  = _sublayer_fn(layers[layer_idx], sublayer, model=model)
             h_B = h.unsqueeze(0)
             print("in correlation bef")
-            if sublayer == "attn":
-                J_all = _jac_attn(fn, h_B)
-            elif sublayer == "block":
-                J_all = _jac_block(fn, h_B)
-            else:
-                J_all = _jac_ffn(fn, h_B)
+            J_all = _jac_attn(fn, h_B) if sublayer == "attn" else _jac_ffn(fn, h_B)
             print("in correlation")
             for p in range(n_pos):
                 J_p        = J_all[0, p].float()
@@ -315,7 +296,7 @@ def correlate_sigma_min(model_name="gpt2", n_pos=8, n_probes=128, seed=0):
                 f_loc = make_f_local(fn, h, p)
                 x_p   = h[p].detach().clone()
                 Jv_fn = lambda v, _f=f_loc, _x=x_p: jvp(_f, (_x,), (v,))[1]
-                result = check_invertibility(Jv_fn, n=d_model, m=n_probes)
+                result = check_invertibility(Jv_fn, n=D_MODEL, m=n_probes)
                 smin_approx = result.sigma_min_estimate
 
                 exact_all.append(smin_exact)
@@ -330,4 +311,4 @@ def correlate_sigma_min(model_name="gpt2", n_pos=8, n_probes=128, seed=0):
 
 
 if __name__ == "__main__":
-    correlate_sigma_min("EleutherAI/pythia-160m")
+    correlate_sigma_min()

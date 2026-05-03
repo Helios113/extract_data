@@ -62,8 +62,9 @@ from torch.utils.data import DataLoader
 
 import hf_jacobian as hj
 from extract_dataset import chunk_dataset
-from hf_jacobian.jacobian import _layers, capture_all_hidden, _causal_block_jac, jacobian_stats
+from hf_jacobian.jacobian import _layers, _sublayer_fn, capture_all_hidden, _causal_block_jac, jacobian_stats
 from hf_jacobian.manifold_dataset import ManifoldConfig, ManifoldDataset, _ortho_frame
+from test_jac2 import check_invertibility
 
 _SUBLAYERS = ("attn", "ffn")
 
@@ -196,6 +197,7 @@ def write_meta(
     n_samples: int, seq_len: int, batch_size: int, extra: dict,
     weights: str, d_model: int, n_layers: int,
     compute_jacobians: bool, compute_jacobian_stats: bool,
+    compute_approx_sigma: bool = False, approx_sigma_probes: int = 64,
 ):
     meta = f.create_group("meta")
     meta.attrs["model"]                  = model_name
@@ -208,6 +210,8 @@ def write_meta(
     meta.attrs["batch_size"]             = batch_size
     meta.attrs["compute_jacobians"]      = compute_jacobians
     meta.attrs["compute_jacobian_stats"] = compute_jacobian_stats
+    meta.attrs["compute_approx_sigma"]   = compute_approx_sigma
+    meta.attrs["approx_sigma_probes"]    = approx_sigma_probes
 
     if src_type == "dataset":
         meta.attrs["dataset_name"]   = src["name"]
@@ -275,6 +279,8 @@ def main():
     compute_jacobians      = cfg.get("compute_jacobians", False)
     store_full_jacobians   = cfg.get("store_full_jacobians", False)
     compute_jacobian_stats = cfg.get("compute_jacobian_stats", False)
+    compute_approx_sigma   = cfg.get("compute_approx_sigma", False)
+    approx_sigma_probes    = cfg.get("approx_sigma_probes", 64)
     jac_chunk              = cfg.get("jac_chunk", 64)
     weights                = cfg.get("weights", "real")
     if weights not in ("real", "random"):
@@ -415,6 +421,7 @@ def main():
                 f, model_name, src_type, src, n_samples, seq_len, batch_size, extra_meta,
                 weights=weights, d_model=d_model, n_layers=n_layers,
                 compute_jacobians=compute_jacobians, compute_jacobian_stats=compute_jacobian_stats,
+                compute_approx_sigma=compute_approx_sigma, approx_sigma_probes=approx_sigma_probes,
             )
 
         def _gpu_postfix():
@@ -436,7 +443,65 @@ def main():
                 if batch.is_floating_point():
                     batch = batch.to(dtype=next(model.parameters()).dtype)
 
-                if not compute_jacobians:
+                if compute_approx_sigma:
+                    from torch.func import jvp as _jvp
+                    store = capture_all_hidden(model, batch)
+
+                    if src_type == "dataset":
+                        _ds_append(f, "input_ids", batch.cpu().numpy())
+                    elif src_type == "random_tokens":
+                        _ds_append(f, "token_ids", raw.numpy())
+                    elif raw is not None:
+                        _ds_append(f, "manifold_points", raw.numpy())
+
+                    _ds_append(f, "embed_out",    store[("embed", "out")].float().cpu().numpy())
+                    _ds_append(f, "final_hidden", store[("final", "out")].float().cpu().numpy())
+
+                    for layer_idx in range(n_layers):
+                        layer = _layers(model)[layer_idx]
+                        for sub in sublayers:
+                            if (layer_idx, sub) not in store:
+                                continue
+                            h_B = store[(layer_idx, sub)]          # (B, seq, d)
+                            _ds_append(f, f"layer_{layer_idx}/{sub}/hidden_out",
+                                       h_B.float().cpu().numpy())
+
+                            fn = _sublayer_fn(layer, sub, model=model)
+                            # HF models take (B, seq, d); wrap to (seq, d) for probe closure
+                            from hf_jacobian.custom_model import CustomModel as _CM
+                            if not isinstance(model, _CM):
+                                _fn = lambda x, _f=fn: _f(x.unsqueeze(0)).squeeze(0)
+                            else:
+                                _fn = fn
+
+                            smin_batch = []
+                            inv_batch  = []
+                            for b in range(B):
+                                h = h_B[b]                         # (seq, d)
+                                smin_seq = []
+                                inv_seq  = []
+                                for p in range(h.shape[0]):
+                                    ctx = h.detach().clone()
+                                    def f_loc(x, _ctx=ctx, _p=p, _f=_fn):
+                                        full = _ctx.clone()
+                                        full[_p] = x
+                                        return _f(full)[_p]
+                                    x_p   = h[p].detach().clone()
+                                    Jv_fn = lambda v, _fl=f_loc, _x=x_p: _jvp(_fl, (_x,), (v,))[1]
+                                    res   = check_invertibility(Jv_fn, n=d_model, m=approx_sigma_probes)
+                                    smin_seq.append(res.sigma_min_estimate)
+                                    inv_seq.append(float(res.is_invertible))
+                                smin_batch.append(smin_seq)
+                                inv_batch.append(inv_seq)
+
+                            _ds_append(f, f"layer_{layer_idx}/{sub}/approx_sigma_min",
+                                       np.array(smin_batch, dtype=np.float32))
+                            _ds_append(f, f"layer_{layer_idx}/{sub}/is_invertible",
+                                       np.array(inv_batch,  dtype=np.float32))
+                        pbar.update(len(sublayers) * B)
+                        pbar.set_postfix(_gpu_postfix())
+
+                elif not compute_jacobians:
                     store = capture_all_hidden(model, batch)
 
                     if src_type == "dataset":
@@ -457,6 +522,7 @@ def main():
                     pbar.update(n_layers * len(sublayers) * B)
                     pbar.set_postfix(_gpu_postfix())
                 else:
+                    # full jacrev Jacobians
                     # single forward pass captures all hidden states for this batch
                     store = capture_all_hidden(model, batch)
                     _ds_append(f, "embed_out",    store[("embed", "out")].float().cpu().numpy())
