@@ -207,3 +207,51 @@ def ess(
         "essval": ess_np,
         "dimension": float(np.nanmean(ids)),
     }
+
+
+def ess_subset(
+    X_pool: torch.Tensor,
+    query_idx: torch.Tensor,
+    k: int = 100,
+    d: int = 1,
+    ver: str = "a",
+    n_groups: int = 5000,
+    seed: int | None = None,
+) -> dict:
+    """
+    ESS for a subset of query points, using the full X_pool for kNN lookup.
+
+    X_pool    : (N, D) full point cloud (e.g. all embedding vectors)
+    query_idx : (M,) indices into X_pool for which to compute ID
+    k         : number of nearest neighbors per query point
+    d, ver, n_groups: same as ess()
+
+    Returns dict:
+      dimension_pw  np.ndarray (M,) — per-query fractional ID
+      essval        np.ndarray (M,) — per-query ESS statistic
+      dimension     float — nanmean of dimension_pw
+      query_idx     np.ndarray (M,) — the indices passed in
+    """
+    rng = np.random.default_rng(seed)
+
+    X_pool_d = X_pool.double()
+    Q = X_pool_d[query_idx]  # (M, D)
+
+    # kNN from each query point into the full pool (excluding self)
+    dists = torch.cdist(Q, X_pool_d)  # (M, N)
+    for i, qi in enumerate(query_idx.tolist()):
+        dists[i, qi] = float("inf")
+    _, knn_idx = dists.topk(k, dim=1, largest=False)  # (M, k)
+
+    neighborhoods = X_pool[knn_idx]  # (M, k, D)
+    ess_vals = _ess_values_batch(neighborhoods, d=d, ver=ver, n_groups=n_groups, rng=rng)
+    ess_np = ess_vals.cpu().numpy()
+
+    ids = np.array([_ess_to_id(float(ev), d, ver) for ev in ess_np])
+
+    return {
+        "dimension_pw": ids,
+        "essval": ess_np,
+        "dimension": float(np.nanmean(ids)),
+        "query_idx": query_idx.cpu().numpy(),
+    }
