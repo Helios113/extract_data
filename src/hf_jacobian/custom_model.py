@@ -110,7 +110,12 @@ class CustomModel(nn.Module):
         self.norm   = RMSNorm(cfg.d_model)
 
     def forward(self, input_ids=None, inputs_embeds=None):
-        x = inputs_embeds if inputs_embeds is not None else self.embed(input_ids)
+        if inputs_embeds is not None:
+            x = inputs_embeds
+        else:
+            if input_ids.dim() == 1:
+                input_ids = input_ids.unsqueeze(0)
+            x = self.embed(input_ids)
         for layer in self.layers:
             x = layer(x)
         return self.norm(x)

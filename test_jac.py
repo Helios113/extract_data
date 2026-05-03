@@ -1,150 +1,333 @@
-import sys
-import time
-import torch
-from torch.func import jacrev
-import tqdm
-sys.path.insert(0, "src")
+import torch, time, sys
+sys.path.insert(0, 'src')
 import hf_jacobian as hj
-from hf_jacobian.jacobian import _layers, _sublayer_fn, capture_all_hidden, _causal_block_jac
+from hf_jacobian.jacobian import _layers, _sublayer_fn, capture_all_hidden, _jac_attn, _jac_ffn, _jac_block
+from test_jac2 import check_invertibility
+from torch.func import jvp
 
 # ── config ────────────────────────────────────────────────────────────────────
-TEXT        = "hello world, my name is Preslav. I am a "
-MODEL_NAME  = "gpt2"
-LAYERS      = [0, 1, 2,3,4,5,7,8,9,10,11]          # which transformer layers to probe
-SUBLAYERS   = ["attn", "ffn"]    # sublayers within each layer
-CHEB_DEGREE = 60                 # Chebyshev polynomial degree
-CHEB_NVECS  = 30                 # Hutchinson probe vectors
-CHEB_EPS    = 1e-4               # lower spectral bound: a = eps * lambda_max
+D_MODEL  = 1024
+SEQ      = 16     # sequence length for the comparison test
+N_PROBES = 128     # probe vectors for check_invertibility
+N_POS    = 4      # token positions to compare
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def run():
-    model, tok = hj.load(MODEL_NAME)
-    inputs = torch.randint(100,(1024,))
-    # tokens = [tok.decode([t]) for t in inputs[0].tolist()]
-    seq    = len(inputs)
-    dtype  = next(model.parameters()).dtype
-    # print(inputs)
-    dets = []
-    # t0 = time.perf_counter()
-    total_steps = len(LAYERS)*len(SUBLAYERS)*seq
-    with tqdm.tqdm(total=total_steps, desc="samples") as pbar:
-        for layer_idx in LAYERS:
-            for sub in SUBLAYERS:      
-                hidden_out, jac = _causal_block_jac(
-                                    model, inputs, layer_idx, sub, 768)
-                jac = jac.squeeze(0)
-                # print(jac.shape)
-                
-                for i in range(seq):
-                    sv = torch.linalg.svdvals(jac[i])              # (d,) descending
-                    dets.append( sv.log().sum().item())
-                    pbar.update(1)
-    
-    
-    return dets    
+def _jac_mem_mb(seq, d, sublayer, bytes_per_elem=4):
+    """Estimate peak memory (MB) for one Jacobian computation.
+
+    attn: vmap(jacrev) over seq independent (d->d) functions.
+          Peak tensor is the output stack: seq * d * d floats.
+    ffn:  jacrev on full (seq,d) input builds a (seq,d,seq,d) intermediate.
+          Peak tensor: seq^2 * d^2 floats.
+    """
+    n_elems = seq * d * d if sublayer == "attn" else seq * seq * d * d
+    return n_elems * bytes_per_elem / 1024**2
+
+
+def _approx_time_single(fn, h_seq, n_probes):
+    """Time check_invertibility (JVP probes) for a single token position."""
+    f_loc = make_f_local(fn, h_seq, 0)
+    x_p   = h_seq[0].detach().clone()
+    Jv_fn = lambda v, _f=f_loc, _x=x_p: jvp(_f, (_x,), (v,))[1]
+    t0 = time.perf_counter()
+    check_invertibility(Jv_fn, n=h_seq.shape[-1], m=n_probes)
+    return time.perf_counter() - t0
+
+
+def bench():
+    print(f"{'d_model':>6} {'seq':>6}  "
+          f"{'attn/tok (s)':>13}  {'attn MB':>8}  "
+          f"{'ffn/tok (s)':>12}  {'ffn MB':>8}  "
+          f"{'approx attn (s)':>16}  {'approx ffn (s)':>15}")
+    print('-' * 100)
+    for d_model in [512, 1024, 2048]:
+        cfg   = hj.Config(d_model=d_model, n_heads=4, n_layers=2, vocab_size=256, mlp_expand=4)
+        model = hj.CustomModel(cfg).eval()
+        for seq in [1, 2, 4, 8]:
+            inputs  = torch.randint(0, cfg.vocab_size, (seq,))
+            store   = capture_all_hidden(model, inputs)
+            layers  = _layers(model)
+
+            h_attn  = store[(0, 'attn')][0:1].detach()
+            h_ffn   = store[(0, 'ffn')][0:1].detach()
+            fn_attn = _sublayer_fn(layers[0], 'attn', model=model)
+            fn_ffn  = _sublayer_fn(layers[0], 'ffn',  model=model)
+
+            t0 = time.perf_counter(); _jac_attn(fn_attn, h_attn); t_attn = (time.perf_counter() - t0) / seq
+            t0 = time.perf_counter(); _jac_attn(fn_ffn,  h_ffn);  t_ffn  = (time.perf_counter() - t0) / seq
+            t_approx_attn = _approx_time_single(fn_attn, h_attn[0], N_PROBES)
+            t_approx_ffn  = _approx_time_single(fn_ffn,  h_ffn[0],  N_PROBES)
+
+            m = _jac_mem_mb(seq, d_model, 'attn')
+            print(f'{d_model:>6} {seq:>6}  '
+                  f'{t_attn:>13.4f}  {m:>8.1f}  '
+                  f'{t_ffn:>12.4f}  {m:>8.1f}  '
+                  f'{t_approx_attn:>16.4f}  {t_approx_ffn:>15.4f}')
 
 
 def make_f_local(fn, h_seq, p):
-    """Return f_local: R^d -> R^d, the per-token sublayer map at position p.
-
-    h_seq is the full frozen context (seq, d). f_local replaces only token p,
-    runs the sublayer, and returns the output at p. This gives the local d×d
-    Jacobian dout[p]/din[p].
-    """
+    """f_local: R^d -> R^d — sublayer output at position p with context frozen."""
     ctx = h_seq.detach().clone()
 
-    def f_local(x, _ctx=ctx, _p=p):
-        full = torch.cat([_ctx[:_p], x.unsqueeze(0), _ctx[_p + 1:]], dim=0)
-        return fn(full.unsqueeze(0)).squeeze(0)[_p]
-
+    def f_local(x):
+        full = ctx.clone()
+        full[p] = x
+        return fn(full)[p]
     return f_local
-      
-def run1():
-    model, tok = hj.load(MODEL_NAME)
-    inputs = torch.randint(100,(128,))
-    # tokens = [tok.decode([t]) for t in inputs[0].tolist()]
-    seq    = len(inputs)
-    dtype  = next(model.parameters()).dtype
-   
-    store = capture_all_hidden(model, inputs)
+
+
+def compare_invertibility():
+    cfg    = hj.Config(d_model=D_MODEL, n_heads=4, n_layers=2, vocab_size=256, mlp_expand=4)
+    model  = hj.CustomModel(cfg).eval()
+    inputs = torch.randint(0, cfg.vocab_size, (SEQ,))
+    store  = capture_all_hidden(model, inputs)   # single forward pass
     layers = _layers(model)
-    dets = []
-    
-    total_steps = len(LAYERS)*len(SUBLAYERS)*seq
-    # with tqdm.tqdm(total=total_steps, desc="samples") as pbar:
-    for layer_idx in LAYERS:
-        for sublayer in SUBLAYERS:
-            key   = (layer_idx, sublayer)
-            if key not in store:
-                continue
-            h    = store[key]        # (1, seq, d)
-            fn   = _sublayer_fn(layers[layer_idx], sublayer, model=model)
 
-            for p in range(seq):
-                t0 = time.perf_counter()
-                
-                f_local = make_f_local(fn, h[0], p)
-                x_p     = h[0, p].detach().clone()
+    print(f"d_model={D_MODEL}  seq={SEQ}  n_probes={N_PROBES}\n")
+    hdr = f"{'sub':>4} {'pos':>3}  {'exact_smin':>12} {'approx_smin':>12}  {'exact_smax':>12} {'approx_smax':>12}  {'exact_rank':>10} {'approx_rank':>11}  {'invertible':>10}  {'t_exact/tok':>11} {'t_approx':>8}"
+    print(hdr)
+    print("-" * len(hdr))
 
-                jac = jacrev(f_local)(x_p).float() 
-                sv  = torch.linalg.svdvals(jac)              # (d,) descending
-                dets.append( sv.log().sum().item())
+    for sublayer in ("attn", "ffn"):
+        h   = store[(0, sublayer)][0]    # (seq, d)
+        fn  = _sublayer_fn(layers[0], sublayer, model=model)
+        h_B = h.unsqueeze(0)             # (1, seq, d)
 
-                
-                print("time per iter:", time.perf_counter()-t0)
-            
-    return dets
+        # ── approx first (cheap) ─────────────────────────────────────────────
+        approx_results = []
+        for p in range(N_POS):
+            x_p   = h[p].detach().clone()
+            f_loc = make_f_local(fn, h, p)
+            Jv_fn = lambda v, _f=f_loc, _x=x_p: jvp(_f, (_x,), (v,))[1]
+            t0     = time.perf_counter()
+            result = check_invertibility(Jv_fn, n=D_MODEL, m=N_PROBES)
+            t_approx = time.perf_counter() - t0
+            approx_results.append((result, t_approx))
+            print(f"  {sublayer} pos={p}  approx done  invertible={result.is_invertible}  smin≈{result.sigma_min_estimate:.4f}  ({t_approx:.2f}s)")
+
+        # ── exact second (expensive) ──────────────────────────────────────────
+        t0    = time.perf_counter()
+        J_all = (_jac_attn if sublayer == "attn" else _jac_ffn)(fn, h_B)
+        t_exact_per_tok = (time.perf_counter() - t0) / SEQ
+
+        print()
+        for p in range(N_POS):
+            J_p        = J_all[0, p].float()
+            sv_exact   = torch.linalg.svdvals(J_p)
+            smin_exact = sv_exact[-1].item()
+            smax_exact = sv_exact[0].item()
+            rank_exact = int((sv_exact / sv_exact[0] > 1e-6).sum().item())
+            result, t_approx = approx_results[p]
+            print(
+                f"{sublayer:>4} {p:>3}  "
+                f"{smin_exact:>12.4f} {result.sigma_min_estimate:>12.4f}  "
+                f"{smax_exact:>12.4f} {result.sigma_max_estimate:>12.4f}  "
+                f"{rank_exact:>10} {result.rank_estimate:>11}  "
+                f"{str(result.is_invertible):>10}  "
+                f"{t_exact_per_tok:>11.3f}s {t_approx:>8.3f}s"
+            )
+        print()
 
 
-def hutchinson_trace(f_local, x, n_vecs=30):
-    """Estimate Tr(J) via Hutchinson: E[v^T J v] with v ~ N(0, I).
+def make_synthetic_residual(d, n_singular, seed=0):
+    """Build a synthetic J_f = I + J_g with planted eigenvalues.
 
-    Uses JVPs so memory is O(d) rather than O(d^2).
+    J_g = Q diag(eigs) Q^T  (symmetric, so eigenvalues = eigs exactly).
+    J_f = I + J_g has eigenvalues 1 + eigs[i].
+    Setting eigs[i] = -1 makes those eigenvalues of J_f exactly 0 → singular.
+
+    n_singular: how many eigenvalues of J_g are planted at -1.
+    Remaining eigenvalues are uniform in (-0.5, 0.5) so J_f is well-conditioned
+    everywhere else (eigenvalues of J_f in (0.5, 1.5)).
+
+    Returns (J_f, true_rank) where true_rank = d - n_singular.
     """
-    from torch.func import jvp
-    estimates = []
-    for _ in range(n_vecs):
-        v = torch.randn_like(x)
-        _, jv = jvp(f_local, (x,), (v,))   # jv = J @ v
-        estimates.append((v * jv).sum())
-    return torch.stack(estimates).mean()
+    torch.manual_seed(seed)
+    Q, _ = torch.linalg.qr(torch.randn(d, d))   # single orthonormal basis
+    eigs = torch.cat([
+        torch.full((n_singular,), -1.0),
+        torch.rand(d - n_singular) - 0.5,        # in (-0.5, 0.5)
+    ])
+    J_g = Q @ torch.diag(eigs) @ Q.T
+    J_f = torch.eye(d) + J_g
+    return J_f, d - n_singular
 
 
-def compare_trace(n_positions=8, n_vecs=CHEB_NVECS):
-    """Compare Hutchinson trace estimate vs exact tr(J) from full Jacobian."""
-    model, tok = hj.load(MODEL_NAME)
-    inputs = torch.randint(100, (128,))
-    store = capture_all_hidden(model, inputs)
-    layers = _layers(model)
+def compare_singular_detection(n_singulars=(0, 1, 4, 16, 64, 128)):
+    """Compare check_invertibility vs exact SVD on synthetic J_f = I + J_g.
 
-    print(f"{'layer':>5} {'sub':>4} {'pos':>3}  {'tr_exact':>12} {'tr_hutch':>12} {'rel_err':>9}  {'t_exact':>8} {'t_hutch':>8}")
-    print("-" * 75)
+    Tests whether the probe method correctly detects singularity and tracks
+    sigma_min as we plant increasing numbers of -1 eigenvalues in J_g.
+    This is the right test for residual-structured Jacobians: rank deficiency
+    in J_g alone doesn't make J_f singular; you need eigenvalue = -1.
+    """
+    # Use a smaller d so m=d is affordable; the approximation quality
+    # is independent of the absolute scale of d.
+    d = 1024
+    m = d   # full certificate: m=d guarantees detection with probability 1
+    print(f"d={d}  n_probes={m} (=d, deterministic certificate)\n")
+    hdr = (f"{'n_singular':>10}  "
+           f"{'true_rank':>10} {'approx_rank':>11}  "
+           f"{'exact_smin':>12} {'approx_smin':>12}  "
+           f"{'exact_smax':>12} {'approx_smax':>12}  "
+           f"{'invertible':>10}")
+    print(hdr)
+    print("-" * len(hdr))
 
-    for layer_idx in LAYERS[:3]:          # keep output short; change slice as needed
-        for sublayer in SUBLAYERS:
-            key = (layer_idx, sublayer)
-            if key not in store:
-                continue
-            h  = store[key]
-            fn = _sublayer_fn(layers[layer_idx], sublayer, model=model)
+    for n_sing in n_singulars:
+        J_f, _ = make_synthetic_residual(d, n_sing)
 
-            for p in range(n_positions):
-                f_local = make_f_local(fn, h[0], p)
-                x_p     = h[0, p].detach().clone()
+        # exact
+        sv_exact   = torch.linalg.svdvals(J_f)
+        rank_exact = int((sv_exact / sv_exact[0] > 1e-6).sum())
+        smin_exact = sv_exact[-1].item()
+        smax_exact = sv_exact[0].item()
 
-                t0 = time.perf_counter()
-                jac = jacrev(f_local)(x_p).float()
-                tr_exact = jac.diagonal().sum().item()
-                t_exact = time.perf_counter() - t0
+        # approx via check_invertibility — only needs Jv products
+        Jv_fn = lambda v, _J=J_f.double(): _J @ v
+        result = check_invertibility(Jv_fn, n=d, m=m)
 
-                t0 = time.perf_counter()
-                tr_hutch = hutchinson_trace(f_local, x_p, n_vecs=n_vecs).item()
-                t_hutch = time.perf_counter() - t0
+        print(f"{n_sing:>10}  "
+              f"{rank_exact:>10} {result.rank_estimate:>11}  "
+              f"{smin_exact:>12.6f} {result.sigma_min_estimate:>12.6f}  "
+              f"{smax_exact:>12.6f} {result.sigma_max_estimate:>12.6f}  "
+              f"{str(result.is_invertible):>10}")
 
-                rel_err = abs(tr_hutch - tr_exact) / (abs(tr_exact) + 1e-8)
-                print(f"{layer_idx:>5} {sublayer:>4} {p:>3}  {tr_exact:>12.4f} {tr_hutch:>12.4f} {rel_err:>9.4f}  {t_exact:>8.3f}s {t_hutch:>8.3f}s")
+
+def find_singular_input(sublayer="attn", n_steps=200, lr=0.05, seed=0):
+    """Gradient descent to find an input x that minimises sigma_min(J_f(x)).
+
+    We optimise over the full hidden sequence h (seq, d), differentiating
+    through the Jacobian computation itself. The loss is -sigma_min(J_f(x_0))
+    (we minimise sigma_min to push J_f toward singularity at position 0).
+
+    Uses jacrev to get J_f, then slogdet / svdvals to get sigma_min.
+    Differentiating through jacrev is expensive but only runs n_steps times.
+    """
+    torch.manual_seed(seed)
+    cfg   = hj.Config(d_model=D_MODEL, n_heads=4, n_layers=2, vocab_size=256, mlp_expand=4)
+    model = hj.CustomModel(cfg).eval()
+
+    # initialise from a real forward pass so the starting point is in-distribution
+    with torch.no_grad():
+        inputs = torch.randint(0, cfg.vocab_size, (SEQ,))
+        store  = capture_all_hidden(model, inputs)
+        layers = _layers(model)
+        h_init = store[(0, sublayer)][0].clone()   # (seq, d)
+
+    fn = _sublayer_fn(layers[0], sublayer, model=model)
+
+    # optimise h as a free parameter
+    h = h_init.clone().requires_grad_(True)
+    opt = torch.optim.Adam([h], lr=lr)
+
+    print(f"Searching for near-singular input  sublayer={sublayer}  d={D_MODEL}  seq={SEQ}")
+    print(f"{'step':>6}  {'sigma_min':>12}  {'sigma_max':>12}  {'condition':>12}")
+    print("-" * 50)
+
+    from torch.func import jacrev as _jacrev
+
+    for step in range(n_steps):
+        opt.zero_grad()
+
+        # local Jacobian at position 0: d(out[0])/d(in[0])
+        h_det = h.detach()
+        ctx   = h_det.clone()
+
+        def f0(x):
+            full = ctx.clone()
+            full[0] = x
+            return fn(full)[0]
+
+        # differentiate through jacrev — this builds J then computes sigma_min
+        J = _jacrev(f0)(h[0]).float()
+        sv = torch.linalg.svdvals(J)          # descending
+        loss = sv[-1]                          # minimise sigma_min
+
+        loss.backward()
+        opt.step()
+
+        if step % 20 == 0 or step == n_steps - 1:
+            smin = sv[-1].item()
+            smax = sv[0].item()
+            cond = smax / (smin + 1e-12)
+            print(f"{step:>6}  {smin:>12.6f}  {smax:>12.6f}  {cond:>12.2f}")
+
+    print(f"\nFinal sigma_min: {sv[-1].item():.6f}  (0 = singular)")
+
+
+def correlate_sigma_min(model_name="gpt2", n_pos=8, n_probes=128, seed=0):
+    """Pearson correlation between exact sigma_min (SVD) and approx sigma_min (JVP probes).
+
+    Sweeps all sublayers across all layers and n_pos token positions on a
+    single random sequence. Prints a per-sublayer table and an overall correlation.
+    """
+    torch.manual_seed(seed)
+    model, tok = hj.load(model_name)
+    layers     = _layers(model)
+    n_layers   = len(layers)
+    d_model    = next(model.parameters()).shape[-1]
+
+    text   = "The quick brown fox jumps over the lazy dog and then keeps running"
+    inputs = hj.tokenize(tok, text)
+    seq    = inputs.shape[-1]
+    store  = capture_all_hidden(model, inputs)
+
+    # GPT-2 sublayer fns take (B, seq, d); wrap to (seq, d) for jac utilities.
+    from hf_jacobian.custom_model import CustomModel
+    is_custom = isinstance(model, CustomModel)
+
+    def wrap_fn(fn):
+        if is_custom:
+            return fn
+        return lambda x: fn(x.unsqueeze(0)).squeeze(0)
+
+    n_pos = min(n_pos, seq)
+    exact_all  = []
+    approx_all = []
+
+    print(f"model={model_name}  d={d_model}  seq={seq}  layers={n_layers}  n_probes={n_probes}\n")
+    hdr = f"{'layer':>5} {'sub':>4} {'pos':>3}  {'exact_smin':>12} {'approx_smin':>12}  {'ratio':>8}"
+    print(hdr)
+    print("-" * len(hdr))
+
+    arch = type(model).__name__
+    sublayers = ("block",) if arch == "GPTNeoXModel" else ("attn", "ffn")
+
+    for layer_idx in range(n_layers):
+        for sublayer in sublayers:
+            h   = store[(layer_idx, sublayer)][0]   # (seq, d)
+            fn  = wrap_fn(_sublayer_fn(layers[layer_idx], sublayer, model=model))
+            h_B = h.unsqueeze(0)
+            print("in correlation bef")
+            if sublayer == "attn":
+                J_all = _jac_attn(fn, h_B)
+            elif sublayer == "block":
+                J_all = _jac_block(fn, h_B)
+            else:
+                J_all = _jac_ffn(fn, h_B)
+            print("in correlation")
+            for p in range(n_pos):
+                J_p        = J_all[0, p].float()
+                smin_exact = torch.linalg.svdvals(J_p)[-1].item()
+
+                f_loc = make_f_local(fn, h, p)
+                x_p   = h[p].detach().clone()
+                Jv_fn = lambda v, _f=f_loc, _x=x_p: jvp(_f, (_x,), (v,))[1]
+                result = check_invertibility(Jv_fn, n=d_model, m=n_probes)
+                smin_approx = result.sigma_min_estimate
+
+                exact_all.append(smin_exact)
+                approx_all.append(smin_approx)
+                ratio = smin_approx / (smin_exact + 1e-12)
+                print(f"{layer_idx:>5} {sublayer:>4} {p:>3}  {smin_exact:>12.6f} {smin_approx:>12.6f}  {ratio:>8.3f}")
+
+    e = torch.tensor(exact_all, dtype=torch.float64)
+    a = torch.tensor(approx_all, dtype=torch.float64)
+    corr = torch.corrcoef(torch.stack([e, a]))[0, 1].item()
+    print(f"\nPearson r(exact, approx) = {corr:.6f}  (n={len(exact_all)} samples)")
 
 
 if __name__ == "__main__":
-    compare_trace()
+    correlate_sigma_min("EleutherAI/pythia-160m")

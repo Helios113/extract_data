@@ -284,55 +284,113 @@ def capture_endpoints(
     return captured_embed[0], captured_final[0]
 
 
-def _jac_batched(fn, x_B, jac_chunk):
-    """Chunked Jacobian for a batch. x_B: (B, seq, d) → (B, seq, d, d).
-    fn must accept (B, seq, d) and return (B, seq, d)."""
+def _jac_attn(fn, x_B):
+    """Per-token local Jacobian for attention sublayers via vmap(jacrev).
+
+    Each token p gets its own R^d→R^d function with context frozen, so we
+    pay O(seq * d * T_attn(p)) instead of O(seq^2 * d * T_attn(seq)) from
+    the full-sequence approach. Wins when seq is large.
+
+    x_B: (B, seq, d).  Returns (B, seq, d, d).
+    """
+    from torch.func import jacrev, vmap
+
     B, seq, d = x_B.shape
-    eye = torch.eye(d, device=x_B.device, dtype=x_B.dtype)
-    jac = torch.zeros(B, seq, d, d, device=x_B.device, dtype=x_B.dtype)
+    jacs = []
+    for b in range(B):
+        h = x_B[b].detach()                          # (seq, d)
+        eye = torch.eye(seq, device=h.device).unsqueeze(-1)   # (seq, seq, 1)
+        ctxs = h.unsqueeze(0).expand(seq, -1, -1).clone()
+        ctxs[torch.arange(seq), torch.arange(seq)] = 0.0
 
-    for p in range(seq):
-        x_p = x_B[:, :p+1].detach().clone().requires_grad_(True)   # (B, p+1, d)
-        out = fn(x_p)                                              # (B, p+1, d)
-        out_p = out[:, p, :]                                       # (B, d)
-        for i0 in range(0, d, jac_chunk):
-            i1 = min(i0 + jac_chunk, d)
-            chunk = i1 - i0
-            go = eye[i0:i1].unsqueeze(1).expand(chunk, B, d).contiguous()  # (chunk, B, d)
-            g = torch.autograd.grad(
-                out_p, x_p,
-                grad_outputs=go,
-                is_grads_batched=True,
-                retain_graph=(i1 < d),
-            )[0]                                                   # (chunk, B, p+1, d)
-            jac[:, p, i0:i1, :] = g[:, :, p, :].transpose(0, 1)    # (B, chunk, d)
+        def f_single(x_p, mask, ctx, _fn=fn):
+            full = ctx + mask * x_p.unsqueeze(0)      # (seq, d)
+            return (_fn(full) * mask).sum(0)           # (d,)
 
-    return jac
+        jacs.append(vmap(jacrev(f_single))(h, eye, ctxs))   # (seq, d, d)
+    return torch.stack(jacs)                          # (B, seq, d, d)
+
+
+def _jac_ffn(fn, x_B):
+    """Per-token local Jacobian for FFN sublayers via jacrev on the full sequence.
+
+    FFN is pointwise so jacrev(fn)(x) costs the same as seq independent jacrevs
+    but in one kernel. Extract diagonal blocks J[p,:,p,:].
+
+    x_B: (B, seq, d).  Returns (B, seq, d, d).
+    """
+    from torch.func import jacrev
+
+    B, seq, d = x_B.shape
+    idx = torch.arange(seq, device=x_B.device)
+    jacs = []
+    for b in range(B):
+        J = jacrev(fn)(x_B[b].detach())       # (seq, d, seq, d)
+        jacs.append(J[idx, :, idx, :])         # (seq, d, d)
+    return torch.stack(jacs)                   # (B, seq, d, d)
+
+
+def _jac_block(fn, x_B):
+    """Per-token local Jacobian for parallel-residual block sublayers.
+
+    Same vmap(jacrev) strategy as _jac_attn: freeze context, differentiate
+    d(out_p)/d(in_p) for each position p in one vectorized call.
+
+    x_B: (B, seq, d).  Returns (B, seq, d, d).
+    """
+    from torch.func import jacrev, vmap
+
+    B, seq, d = x_B.shape
+    x_B = x_B.float()
+    jacs = []
+    for b in range(B):
+        h = x_B[b].detach()                               # (seq, d), float32
+        eye  = torch.eye(seq, device=h.device).unsqueeze(-1)  # (seq, seq, 1)
+        ctxs = h.unsqueeze(0).expand(seq, -1, -1).clone()
+        ctxs[torch.arange(seq), torch.arange(seq)] = 0.0
+
+        def f_single(x_p, mask, ctx, _fn=fn):
+            full = ctx + mask * x_p.unsqueeze(0)           # (seq, d)
+            return (_fn(full) * mask).sum(0)               # (d,)
+
+        jacs.append(vmap(jacrev(f_single))(h, eye, ctxs))  # (seq, d, d)
+    return torch.stack(jacs)                               # (B, seq, d, d)
+
+
+def _jac_batched(fn, x_B, sublayer=None, jac_chunk=None):
+    """Dispatch to the right Jacobian strategy based on sublayer type.
+
+    attn → per-token vmap(jacrev): avoids paying O(seq^2) attention cost
+           in each of seq*d backward passes.
+    ffn  → full-sequence jacrev: FFN is pointwise so one graph is cheaper
+           than seq separate graph builds.
+    """
+    if sublayer == "attn":
+        return _jac_attn(fn, x_B)
+    return _jac_ffn(fn, x_B)
 
 
 def _causal_block_jac(
-    model, inputs, layer_idx: int, sublayer: str, jac_chunk: int = 128
+    model, inputs, layer_idx: int, sublayer: str, jac_chunk: int = 128,
+    store: dict = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Returns (hidden_out, jac):
-      hidden_out : (B, seq, d)    residual output h + g(LN(h))
-      jac        : (B, seq, d, d) per-position Jacobian d(h + g(LN(h)))/dh
+      hidden_out : (B, seq, d)    residual-stream input to this sublayer
+      jac        : (B, seq, d, d) per-position local Jacobian
 
-    Uses the sublayer function directly (no full-model graph), with a causal
-    prefix truncation per position and chunked backward over output dims.
-    jac_chunk: output dims per backward pass — lower = less VRAM, higher = faster.
+    Pass a pre-computed store from capture_all_hidden to avoid re-running
+    the full model forward when computing Jacobians for multiple sublayers.
     """
-    store = capture_all_hidden(model, inputs)
+    if store is None:
+        store = capture_all_hidden(model, inputs)
     hidden_out = store[(layer_idx, sublayer)]   # (B, seq, d), on CPU
     layer = _layers(model)[layer_idx]
-    if isinstance(inputs, torch.Tensor):
-        device = inputs.device
-    else:
-        device = next(layer.parameters()).device
-    dtype = next(layer.parameters()).dtype
+    device = next(layer.parameters()).device
+    dtype  = next(layer.parameters()).dtype
     hidden_out = hidden_out.to(device=device, dtype=dtype)
     fn = _sublayer_fn(layer, sublayer, model=model)
-    jacs = _jac_batched(fn, hidden_out, jac_chunk)
+    jacs = _jac_batched(fn, hidden_out, sublayer=sublayer)
     return hidden_out, jacs
 
 
@@ -367,10 +425,11 @@ def jacobian_stats(jac: torch.Tensor) -> dict:
     promoted to fp32.
     """
     jac = jac.to(torch.float32)
-    det = torch.linalg.det(jac)
-    sv  = torch.linalg.svdvals(jac)         # (B, seq, d), descending
+    sign, logabsdet = torch.linalg.slogdet(jac)
+    log_det = sign.float() * logabsdet          # signed log|det|
+    sv  = torch.linalg.svdvals(jac)             # (B, seq, d), descending
     return {
-        "det": det,
+        "log_det": log_det,
         "singular_values": sv,
         "sigma_max": sv[..., 0],
         "sigma_min": sv[..., -1],

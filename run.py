@@ -42,7 +42,7 @@ HDF5 layout:
   /samples/{i}/input_ids         — (seq_len,) int64          # dataset only
   /samples/{i}/manifold_points   — (seq_len, ambient_dim)    # manifold / benchmark
   /samples/{i}/layer_{j}/{sub}/hidden_state  — (seq_len, d)
-  /samples/{i}/layer_{j}/{sub}/det           — (seq_len,)
+  /samples/{i}/layer_{j}/{sub}/log_det       — (seq_len,)
   /samples/{i}/layer_{j}/{sub}/sigma_ratio   — (seq_len,)
 
 Usage:
@@ -457,11 +457,23 @@ def main():
                     pbar.update(n_layers * len(sublayers) * B)
                     pbar.set_postfix(_gpu_postfix())
                 else:
+                    # single forward pass captures all hidden states for this batch
+                    store = capture_all_hidden(model, batch)
+                    _ds_append(f, "embed_out",    store[("embed", "out")].float().cpu().numpy())
+                    _ds_append(f, "final_hidden", store[("final", "out")].float().cpu().numpy())
+
+                    if src_type == "dataset":
+                        _ds_append(f, "input_ids", batch.cpu().numpy())
+                    elif src_type == "random_tokens":
+                        _ds_append(f, "token_ids", raw.numpy())
+                    elif raw is not None:
+                        _ds_append(f, "manifold_points", raw.numpy())
+
                     for layer_idx in range(n_layers):
                         for sub in sublayers:
                             try:
                                 hidden_out, jac = _causal_block_jac(
-                                    model, batch, layer_idx, sub, jac_chunk
+                                    model, batch, layer_idx, sub, store=store
                                 )
                             except ValueError:
                                 continue
@@ -472,18 +484,13 @@ def main():
                                            jac.float().cpu().numpy())
                             if compute_jacobian_stats:
                                 stats = jacobian_stats(jac)
-                                for key in ("det", "sigma_max", "sigma_min", "singular_values"):
+                                for key in ("log_det", "sigma_max", "sigma_min", "singular_values"):
                                     t = stats.get(key)
                                     if t is not None:
                                         _ds_append(f, f"layer_{layer_idx}/{sub}/{key}",
                                                    t.float().cpu().numpy())
                             pbar.update(1)
                             pbar.set_postfix(_gpu_postfix())
-
-                    from hf_jacobian.jacobian import capture_endpoints
-                    embed_out, final_hidden = capture_endpoints(model, batch)
-                    _ds_append(f, "embed_out",    embed_out.float().cpu().numpy())
-                    _ds_append(f, "final_hidden", final_hidden.float().cpu().numpy())
 
         f["meta"].attrs["n_samples"] = actual_samples
         f["meta"].attrs["n_tokens"]  = actual_samples * seq_len
