@@ -2,7 +2,7 @@
   "model": "EleutherAI/pythia-160m",
   "device": "cuda",
   "weights": "real",
-  "output": "out/pythia/0.160b/fp32/manifold/flat_Rsmall_nonoise_d30_n1024_s64.h5",
+  "output": "out/pythia/0.160b/fp32/manifold/real_weights/flat_Rsmall_nonoise_d30_n1024_s64.h5",
   "compute_jacobians": false,
   "wandb": false,
   "sampling": {

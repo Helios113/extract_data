@@ -1,0 +1,23 @@
+{
+  "model": "Qwen/Qwen3-0.6B",
+  "device": "cuda",
+  "weights": "real",
+  "output": "out/smoke/qwen3_0.6b_approx_sigma.h5",
+  "compute_jacobians": false,
+  "compute_approx_sigma": true,
+  "approx_sigma_probes": 32,
+  "wandb": false,
+  "sampling": {
+    "n_samples": 2,
+    "seq_len": 8,
+    "batch_size": 1
+  },
+  "source": {
+    "type": "dataset",
+    "seed": 42,
+    "name": "Salesforce/wikitext",
+    "config": "wikitext-2-raw-v1",
+    "split": "train",
+    "text_column": "text"
+  }
+}

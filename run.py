@@ -64,7 +64,7 @@ import hf_jacobian as hj
 from extract_dataset import chunk_dataset
 from hf_jacobian.jacobian import _layers, _sublayer_fn, capture_all_hidden, _causal_block_jac, jacobian_stats
 from hf_jacobian.manifold_dataset import ManifoldConfig, ManifoldDataset, _ortho_frame
-from test_jac2 import check_invertibility
+from hf_jacobian.invertibility import check_invertibility
 
 _SUBLAYERS = ("attn", "ffn")
 
@@ -340,18 +340,22 @@ def main():
 
     # ── local complete check (before loading model) ───────────────────────────
     if Path(output).exists():
-        with h5py.File(output, "r") as existing:
-            m = existing["meta"].attrs
-            mismatches = _check_meta_match(m, "local file")
-            if mismatches:
-                raise ValueError(
-                    f"Existing file {output!r} metadata does not match config:\n" +
-                    "\n".join(mismatches)
-                )
-            if m.get("status") == "complete":
-                print(f"Local run complete. Uploading {output} ...")
-                _upload(output)
-                return
+        try:
+            with h5py.File(output, "r") as existing:
+                m = existing["meta"].attrs
+                mismatches = _check_meta_match(m, "local file")
+                if mismatches:
+                    raise ValueError(
+                        f"Existing file {output!r} metadata does not match config:\n" +
+                        "\n".join(mismatches)
+                    )
+                if m.get("status") == "complete":
+                    print(f"Local run complete. Uploading {output} ...")
+                    _upload(output)
+                    return
+        except OSError:
+            print(f"WARNING: corrupt local file {output!r} — deleting and restarting.")
+            Path(output).unlink()
 
     wb = cfg.get("wandb", {})
     if wb is not False:

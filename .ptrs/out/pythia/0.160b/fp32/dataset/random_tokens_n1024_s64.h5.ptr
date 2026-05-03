@@ -1,0 +1,26 @@
+{
+  "filename": "random_tokens_n1024_s64.h5",
+  "hash": "209b33625d06436db71d2033eadc1a42",
+  "size": 1631993270,
+  "mtime": 1777847250.9258149,
+  "uploaded_at": 1777847415.049882,
+  "original_path": "out/pythia/0.160b/fp32/dataset/random_tokens_n1024_s64.h5",
+  "h5_meta": {
+    "approx_sigma_probes": 64,
+    "batch_size": 100,
+    "compute_approx_sigma": false,
+    "compute_jacobian_stats": false,
+    "compute_jacobians": false,
+    "d_model": 768,
+    "model": "EleutherAI/pythia-160m",
+    "n_layers": 12,
+    "n_samples": 1024,
+    "n_tokens": 65536,
+    "seed": 42,
+    "seq_len": 64,
+    "source_type": "random_tokens",
+    "status": "complete",
+    "vocab_size": 0,
+    "weights": "real"
+  }
+}

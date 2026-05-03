@@ -1,16 +1,6 @@
 import torch
 from transformers import AutoModel, AutoTokenizer
 
-# DeepGEMM JIT fails on this machine (no compatible nvcc: 12.8 too old, 13.0
-# has broken 128-bit inline asm). Force Triton fallback before any import
-# touches the flag.
-try:
-    import transformers.integrations.finegrained_fp8 as _fp8
-    _fp8._deepgemm_available = False
-except Exception:
-    pass
-
-
 # QuantFactory GGUF repos carry no tokenizer; map to the canonical base model.
 _GGUF_TOKENIZER = {
     "QuantFactory/gpt2-GGUF":        "openai-community/gpt2",
@@ -53,6 +43,7 @@ def _layers(model):
 
 
 def _sublayer_fn_gpt2(layer, sublayer):
+    torch.backends.cuda.enable_mem_efficient_sdp(False)
     if sublayer == "attn":
         def f(x):                              # x: (B, seq, d)
             out = layer.attn(layer.ln_1(x))[0]
@@ -104,6 +95,8 @@ def _sublayer_fn_qwen3(layer, model, sublayer):
 
 
 def _sublayer_fn_pythia(layer, model, sublayer):
+    torch.backends.cuda.enable_mem_efficient_sdp(False)
+    
     # GPT-NeoX uses a parallel residual: x + attn(LN1(x)) + mlp(LN2(x)).
     # Attn and mlp share the same input — there is no separate attn or ffn
     # residual step. Only sublayer="block" is meaningful.

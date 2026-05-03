@@ -2,7 +2,7 @@
   "model": "openai-community/gpt2",
   "device": "cuda",
   "weights": "real",
-  "output": "out/gpt2/0.124b/fp32/manifold/Rsmall_k0p4_e1p0_noise0p2_d30_n1024_s64.h5",
+  "output": "out/gpt2/0.124b/fp32/manifold/real_weights/Rsmall_k0p4_e1p0_noise0p2_d30_n1024_s64.h5",
   "compute_jacobians": false,
   "wandb": false,
   "sampling": {

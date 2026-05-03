@@ -2,6 +2,7 @@ from .jacobian import load, tokenize, print_model, reinit_weights, jacobian_stat
 from .custom_model import CustomModel, Config
 from .manifold_dataset import ManifoldConfig, ManifoldDataset, sample_manifold
 from .id_estimators import twonn, ess
+from .invertibility import InvertibilityResult, check_invertibility
 
 __all__ = [
     "load", "tokenize", "print_model", "reinit_weights", "jacobian_stats",
@@ -9,6 +10,7 @@ __all__ = [
     "CustomModel", "Config",
     "ManifoldConfig", "ManifoldDataset", "sample_manifold",
     "twonn", "ess",
+    "InvertibilityResult", "check_invertibility",
 ]
 
 

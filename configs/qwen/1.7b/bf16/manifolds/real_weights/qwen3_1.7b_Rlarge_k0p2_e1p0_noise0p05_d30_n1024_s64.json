@@ -2,7 +2,7 @@
   "model": "Qwen/Qwen3-1.7B",
   "device": "cuda",
   "weights": "real",
-  "output": "out/qwen/1.7b/bf16/manifold/Rlarge_k0p2_e1p0_noise0p05_d30_n1024_s64.h5",
+  "output": "out/qwen/1.7b/bf16/manifold/real_weights/Rlarge_k0p2_e1p0_noise0p05_d30_n1024_s64.h5",
   "compute_jacobians": false,
   "wandb": false,
   "sampling": {

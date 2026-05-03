@@ -1,0 +1,23 @@
+{
+  "model": "openai-community/gpt2",
+  "device": "cuda",
+  "weights": "real",
+  "output": "out/smoke/gpt2_approx_sigma_L1.h5",
+  "compute_jacobians": false,
+  "compute_approx_sigma": true,
+  "approx_sigma_probes": 32,
+  "wandb": false,
+  "sampling": {
+    "n_samples": 2,
+    "seq_len": 128,
+    "batch_size": 1
+  },
+  "source": {
+    "type": "dataset",
+    "seed": 42,
+    "name": "Salesforce/wikitext",
+    "config": "wikitext-2-raw-v1",
+    "split": "train",
+    "text_column": "text"
+  }
+}

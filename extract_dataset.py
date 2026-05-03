@@ -20,7 +20,7 @@ def chunk_dataset(tok, dataset, text_column, seq_len: int, n_samples: int):
         text  = separator.join(p for p in parts if p and not _is_wiki_header(p))
         if not text:
             continue
-        all_ids.extend(tok(text, add_special_tokens=False)["input_ids"])
+        all_ids.extend(tok(text, add_special_tokens=False, truncation=False)["input_ids"])
         if len(all_ids) >= need:
             break
 
