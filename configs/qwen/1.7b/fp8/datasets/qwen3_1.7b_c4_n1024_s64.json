@@ -17,5 +17,6 @@
     "config": "en",
     "split": "train",
     "text_column": "text"
-  }
+  },
+  "done": true
 }

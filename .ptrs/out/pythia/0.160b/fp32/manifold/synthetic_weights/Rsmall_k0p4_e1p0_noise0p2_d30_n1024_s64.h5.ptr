@@ -1,0 +1,32 @@
+{
+  "filename": "Rsmall_k0p4_e1p0_noise0p2_d30_n1024_s64.h5",
+  "hash": "acd09fdf44311f58823e5577e12c0af2",
+  "size": 1823746904,
+  "mtime": 1777873170.2320993,
+  "uploaded_at": 1777873351.464002,
+  "original_path": "out/pythia/0.160b/fp32/manifold/synthetic_weights/Rsmall_k0p4_e1p0_noise0p2_d30_n1024_s64.h5",
+  "h5_meta": {
+    "ambient_dim": 31,
+    "approx_sigma_probes": 64,
+    "batch_size": 100,
+    "compute_approx_sigma": false,
+    "compute_jacobian_stats": false,
+    "compute_jacobians": false,
+    "d_model": 768,
+    "lambda_params": "{\"entropy\": 1.0, \"lambda_min\": 0.0, \"lambda_max\": 3.848094, \"isotropic\": true, \"same_sign\": true}",
+    "lambdas": [],
+    "manifold_dim": 30,
+    "model": "EleutherAI/pythia-160m",
+    "n_layers": 12,
+    "n_samples": 1024,
+    "n_tokens": 65536,
+    "noise_std": 0.02079,
+    "patch_radius": 0.103948,
+    "project_dim": 768,
+    "seed": 42,
+    "seq_len": 64,
+    "source_type": "manifold",
+    "status": "complete",
+    "weights": "random"
+  }
+}

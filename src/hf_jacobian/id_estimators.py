@@ -165,6 +165,39 @@ def _ess_to_id(essval: float, d: int, ver: str) -> float:
     return de_int + de_frac
 
 
+# ─── local PCA curvature ─────────────────────────────────────────────────────
+
+def _local_pca_curvature(
+    neighborhoods: torch.Tensor,
+    id_dim: int,
+) -> np.ndarray:
+    """
+    Per-point local PCA curvature from pre-built neighbourhoods.
+
+    For each point, center its k neighbours, run PCA, and define curvature as
+    the fraction of variance captured by the normal subspace (dimensions id_dim+1
+    onward).  A flat manifold scores 0; high curvature / noise scores near 1.
+
+    neighborhoods : (N, k, D) — raw (uncentered) neighbour vectors
+    id_dim        : number of tangent directions to retain (typically
+                    round(ESS dimension estimate))
+    Returns       : (N,) float64 array of per-point curvature values in [0, 1]
+    """
+    N, k, D = neighborhoods.shape
+    id_dim = max(1, min(id_dim, D - 1))
+
+    patches = neighborhoods.double() - neighborhoods.double().mean(dim=1, keepdim=True)  # (N, k, D)
+    # SVD of each patch matrix: singular values squared ∝ variance along each PC
+    # torch.linalg.svdvals returns descending singular values; full_matrices=False is implicit
+    sv = torch.linalg.svdvals(patches)          # (N, min(k, D))
+    var = sv ** 2                                # (N, min(k, D))
+    total = var.sum(dim=-1)                      # (N,)
+    tangent = var[:, :id_dim].sum(dim=-1)        # (N,)
+    # residual fraction = normal variance / total variance
+    curv = ((total - tangent) / total.clamp(min=1e-30)).cpu().numpy()
+    return curv.astype(np.float64)
+
+
 # ─── ESS public API ───────────────────────────────────────────────────────────
 
 def ess(
@@ -174,20 +207,27 @@ def ess(
     ver: str = "a",
     n_groups: int = 5000,
     seed: int | None = None,
+    curvature: bool = False,
 ) -> dict:
     """
     ESS intrinsic dimension estimator (Johnsson et al., 2015).
 
-    X       : (N, D) float tensor
-    k       : number of nearest neighbors defining each local patch
-    d       : simplex dimension (ver='a': any d≥1; ver='b': d=1 only)
-    ver     : 'a' or 'b' (see paper)
-    n_groups: max simplex groups to sample per point
+    X         : (N, D) float tensor
+    k         : number of nearest neighbors defining each local patch
+    d         : simplex dimension (ver='a': any d≥1; ver='b': d=1 only)
+    ver       : 'a' or 'b' (see paper)
+    n_groups  : max simplex groups to sample per point
+    curvature : if True, also compute local PCA curvature on the same
+                neighbourhoods and add it to the returned dict
 
     Returns dict:
-      dimension_pw  np.ndarray (N,) — per-point fractional ID
-      essval        np.ndarray (N,) — per-point ESS statistic
-      dimension     float — nanmean of dimension_pw
+      dimension_pw      np.ndarray (N,) — per-point fractional ID
+      essval            np.ndarray (N,) — per-point ESS statistic
+      dimension         float — nanmean of dimension_pw
+      curvature_pw      np.ndarray (N,) — per-point curvature in [0,1]
+                        (only present when curvature=True)
+      curvature_mean    float — nanmean of curvature_pw
+                        (only present when curvature=True)
     """
     rng = np.random.default_rng(seed)
 
@@ -202,11 +242,19 @@ def ess(
 
     ids = np.array([_ess_to_id(float(ev), d, ver) for ev in ess_np])
 
-    return {
+    result = {
         "dimension_pw": ids,
         "essval": ess_np,
         "dimension": float(np.nanmean(ids)),
     }
+
+    if curvature:
+        id_dim = max(1, round(float(np.nanmean(ids))))
+        curv_pw = _local_pca_curvature(neighborhoods, id_dim)
+        result["curvature_pw"]   = curv_pw
+        result["curvature_mean"] = float(np.nanmean(curv_pw))
+
+    return result
 
 
 def ess_subset(
@@ -217,6 +265,7 @@ def ess_subset(
     ver: str = "a",
     n_groups: int = 5000,
     seed: int | None = None,
+    curvature: bool = False,
 ) -> dict:
     """
     ESS for a subset of query points, using the full X_pool for kNN lookup.
@@ -224,13 +273,17 @@ def ess_subset(
     X_pool    : (N, D) full point cloud (e.g. all embedding vectors)
     query_idx : (M,) indices into X_pool for which to compute ID
     k         : number of nearest neighbors per query point
-    d, ver, n_groups: same as ess()
+    d, ver, n_groups, curvature: same as ess()
 
     Returns dict:
-      dimension_pw  np.ndarray (M,) — per-query fractional ID
-      essval        np.ndarray (M,) — per-query ESS statistic
-      dimension     float — nanmean of dimension_pw
-      query_idx     np.ndarray (M,) — the indices passed in
+      dimension_pw      np.ndarray (M,) — per-query fractional ID
+      essval            np.ndarray (M,) — per-query ESS statistic
+      dimension         float — nanmean of dimension_pw
+      query_idx         np.ndarray (M,) — the indices passed in
+      curvature_pw      np.ndarray (M,) — per-query curvature in [0,1]
+                        (only present when curvature=True)
+      curvature_mean    float — nanmean of curvature_pw
+                        (only present when curvature=True)
     """
     rng = np.random.default_rng(seed)
 
@@ -249,9 +302,17 @@ def ess_subset(
 
     ids = np.array([_ess_to_id(float(ev), d, ver) for ev in ess_np])
 
-    return {
+    result = {
         "dimension_pw": ids,
         "essval": ess_np,
         "dimension": float(np.nanmean(ids)),
         "query_idx": query_idx.cpu().numpy(),
     }
+
+    if curvature:
+        id_dim = max(1, round(float(np.nanmean(ids))))
+        curv_pw = _local_pca_curvature(neighborhoods, id_dim)
+        result["curvature_pw"]   = curv_pw
+        result["curvature_mean"] = float(np.nanmean(curv_pw))
+
+    return result

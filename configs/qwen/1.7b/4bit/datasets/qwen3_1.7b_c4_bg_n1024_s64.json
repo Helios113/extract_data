@@ -17,5 +17,6 @@
     "config": "bg",
     "split": "train",
     "text_column": "text"
-  }
+  },
+  "done": true
 }

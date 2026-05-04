@@ -1,0 +1,26 @@
+{
+  "filename": "random_tokens_n1024_s64.h5",
+  "hash": "f27f5299976322ce15d643012c992cdd",
+  "size": 13284814997,
+  "mtime": 1777861657.1890845,
+  "uploaded_at": 1777863324.134568,
+  "original_path": "out/qwen/1.7b/bf16/dataset/random_tokens_n1024_s64.h5",
+  "h5_meta": {
+    "approx_sigma_probes": 64,
+    "batch_size": 100,
+    "compute_approx_sigma": false,
+    "compute_jacobian_stats": false,
+    "compute_jacobians": false,
+    "d_model": 2048,
+    "model": "Qwen/Qwen3-1.7B",
+    "n_layers": 28,
+    "n_samples": 1024,
+    "n_tokens": 65536,
+    "seed": 42,
+    "seq_len": 64,
+    "source_type": "random_tokens",
+    "status": "complete",
+    "vocab_size": 0,
+    "weights": "real"
+  }
+}

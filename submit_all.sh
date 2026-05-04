@@ -18,6 +18,10 @@ fi
 echo "Submitting ${#CONFIGS[@]} jobs from $CONFIG_DIR"
 
 for CONFIG in "${CONFIGS[@]}"; do
+  if python3 -c "import json,sys; sys.exit(0 if json.load(open('$CONFIG')).get('done') else 1)" 2>/dev/null; then
+    echo "  skipping (done) $CONFIG"
+    continue
+  fi
   JOB_ID=$(sbatch \
     --job-name="extract_$(basename "$CONFIG" .json)" \
     --output="$SCRIPT_DIR/logs/extract_%j.out" \

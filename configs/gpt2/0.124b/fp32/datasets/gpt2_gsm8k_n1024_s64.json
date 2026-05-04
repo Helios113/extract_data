@@ -16,6 +16,10 @@
     "name": "openai/gsm8k",
     "config": "main",
     "split": "train",
-    "text_column": ["question", "answer"]
-  }
+    "text_column": [
+      "question",
+      "answer"
+    ]
+  },
+  "done": true
 }

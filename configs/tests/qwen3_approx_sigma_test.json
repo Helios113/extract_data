@@ -5,11 +5,11 @@
   "output": "out/tests/qwen3_approx_sigma_test.h5",
   "compute_jacobians": false,
   "compute_approx_sigma": true,
-  "approx_sigma_probes": 16,
+  "approx_sigma_probes": 32,
   "sampling": {
-    "n_samples": 2,
+    "n_samples": 512,
     "seq_len": 4,
-    "batch_size": 2
+    "batch_size": 512
   },
   "source": {
     "type": "manifold",

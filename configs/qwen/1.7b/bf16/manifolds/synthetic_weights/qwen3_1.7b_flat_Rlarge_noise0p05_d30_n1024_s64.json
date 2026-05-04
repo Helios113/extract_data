@@ -50,5 +50,6 @@
     "noise_std": 0.051555,
     "seed": 42,
     "project_dim": 2048
-  }
+  },
+  "done": true
 }

@@ -289,6 +289,13 @@ def main():
 
     allow_override = cfg.get("allow_override", False)
 
+    def _mark_done(config_path):
+        with open(config_path) as _f:
+            _d = json.load(_f)
+        _d["done"] = True
+        with open(config_path, "w") as _f:
+            json.dump(_d, _f, indent=2)
+
     def _check_meta_match(meta, source_label):
         mismatches = []
         for key, expected in [
@@ -334,6 +341,7 @@ def main():
             else:
                 # ptr exists + meta matches → always complete (we never upload incomplete)
                 print(f"Run already complete on remote (skipping). Output: {output}")
+                _mark_done(args.config)
                 return
         else:
             print(f"Note: remote pointer exists for {output!r} but has no h5_meta. Proceeding.")
@@ -352,6 +360,7 @@ def main():
                 if m.get("status") == "complete":
                     print(f"Local run complete. Uploading {output} ...")
                     _upload(output)
+                    _mark_done(args.config)
                     return
         except OSError:
             print(f"WARNING: corrupt local file {output!r} — deleting and restarting.")
@@ -442,8 +451,7 @@ def main():
             return {"gpu": f"{util}%", "vram_free": f"{mem_free:.1f}GB"}
 
         actual_samples = skip
-        total_steps = (n_samples - skip) * n_layers * len(sublayers)
-        with tqdm.tqdm(total=total_steps, desc="samples") as pbar:
+        with tqdm.tqdm(total=n_samples, initial=skip, desc="samples") as pbar:
             for offset, batch, raw in batches:
                 B = batch.shape[0]
                 actual_samples += B
@@ -493,6 +501,7 @@ def main():
                                 h = h_B[b].to(_probe_dtype)        # (seq, d)
                                 smin_seq = []
                                 inv_seq  = []
+                                pbar.set_postfix({**_gpu_postfix(), "layer": f"{layer_idx}/{n_layers}", "sample": f"{offset+b}/{n_samples}"})
                                 for p in range(h.shape[0]):
                                     ctx = h.detach().clone()
                                     def f_loc(x, _ctx=ctx, _p=p, _f=_fn):
@@ -514,8 +523,8 @@ def main():
                                        np.array(smin_batch, dtype=np.float32))
                             _ds_append(f, f"layer_{layer_idx}/{sub}/is_invertible",
                                        np.array(inv_batch,  dtype=np.float32))
-                        pbar.update(len(sublayers) * B)
                         pbar.set_postfix(_gpu_postfix())
+                    pbar.update(B)
 
                 elif not compute_jacobians:
                     store = capture_all_hidden(model, batch)
@@ -535,7 +544,7 @@ def main():
                                 continue
                             _ds_append(f, f"layer_{layer_idx}/{sub}/hidden_out",
                                        store[(layer_idx, sub)].float().cpu().numpy())
-                    pbar.update(n_layers * len(sublayers) * B)
+                    pbar.update(B)
                     pbar.set_postfix(_gpu_postfix())
                 else:
                     # full jacrev Jacobians
@@ -552,6 +561,7 @@ def main():
                         _ds_append(f, "manifold_points", raw.numpy())
 
                     for layer_idx in range(n_layers):
+                        pbar.set_postfix({**_gpu_postfix(), "layer": f"{layer_idx}/{n_layers}"})
                         for sub in sublayers:
                             try:
                                 hidden_out, jac = _causal_block_jac(
@@ -571,14 +581,15 @@ def main():
                                     if t is not None:
                                         _ds_append(f, f"layer_{layer_idx}/{sub}/{key}",
                                                    t.float().cpu().numpy())
-                            pbar.update(1)
-                            pbar.set_postfix(_gpu_postfix())
+                    pbar.update(B)
+                    pbar.set_postfix(_gpu_postfix())
 
         f["meta"].attrs["n_samples"] = actual_samples
         f["meta"].attrs["n_tokens"]  = actual_samples * seq_len
         f["meta"].attrs["status"]    = "complete"
         print(f"\nActual samples: {actual_samples}  |  tokens: {actual_samples * seq_len}")
 
+    _mark_done(args.config)
     print(f"Uploading {output} ...")
     _upload(output)
 

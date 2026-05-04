@@ -17,5 +17,6 @@
     "config": "wikitext-2-raw-v1",
     "split": "train",
     "text_column": "text"
-  }
+  },
+  "done": true
 }
