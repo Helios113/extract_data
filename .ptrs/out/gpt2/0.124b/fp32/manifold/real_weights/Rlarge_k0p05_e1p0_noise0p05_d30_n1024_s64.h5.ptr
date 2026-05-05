@@ -2,8 +2,8 @@
   "filename": "Rlarge_k0p05_e1p0_noise0p05_d30_n1024_s64.h5",
   "hash": "b64bc79f5787ed9a702cea63a4f072f7",
   "size": 5082151172,
-  "mtime": 1777882235.866898,
-  "uploaded_at": 1777882663.160721,
+  "mtime": 1777966233.562301,
+  "uploaded_at": 1777966233.564632,
   "original_path": "out/gpt2/0.124b/fp32/manifold/real_weights/Rlarge_k0p05_e1p0_noise0p05_d30_n1024_s64.h5",
   "h5_meta": {
     "ambient_dim": 31,

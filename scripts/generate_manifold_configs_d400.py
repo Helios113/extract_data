@@ -8,7 +8,7 @@ manifold_dim=400 and ambient_dim=401.
 import json
 from pathlib import Path
 
-MANIFOLD_DIM = 400
+MANIFOLD_DIM = 768
 N_SAMPLES    = 1024
 SEQ_LEN      = 64
 

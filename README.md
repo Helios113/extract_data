@@ -281,28 +281,69 @@ intrinsic to the matrix, fp32 just measures them more truthfully.
 
 ## Intrinsic dimension analysis
 
-### Compute ESS + TwoNN
+### Overview
 
-```bash
-python analyze_id.py <h5_file> <out.csv> [--pos 10 49 -1] [--depth layer_3/attn] [--ess-k 100] [--ess-d 1]
+The full workflow is three steps:
+
+```
+run.py  →  out/*.h5  →  analyze_id.py  →  results/*.csv  →  plot_id_sweep.py  →  results/*.png
 ```
 
-- `--pos`: one or more token positions (negative indices supported, e.g. `-1` = last)
-- `--depth`: single depth key; omit for all depths
-- Always runs ESS-a and ESS-b in parallel; outputs columns `twonn`, `ess_a`, `ess_b`, `n`
-- CSV header contains `#`-prefixed metadata lines — read with `pd.read_csv(f, comment='#')`
-- Results are flushed after each cell; partial output is preserved on cancel
-- If `out.csv` exists, a timestamp suffix is added — existing files are never overwritten
+1. **Extract** hidden states with `run.py` (one HDF5 per config).
+2. **Estimate** intrinsic dimension with `scripts/analyze_id.py` — runs TwoNN, ESS-a, ESS-b, LocalPCA curvature, and (optionally) Shannon entropy for every (token position, depth) cell. Writes one CSV row per sample, giving the full per-token distribution.
+3. **Plot** with `scripts/plot_id_sweep.py` — mean + 95% CI vs transformer depth for all four metrics.
 
-### Plot
+### Step 2 — compute metrics
 
 ```bash
-python plot_id.py <csv_file> [--method twonn|ess_a|ess_b] [--pos 10 49] [--out fig.png]
+python scripts/analyze_id.py <h5_file> <out.csv> [options]
 ```
 
-- Colour = token position, line style = estimator
-- `--method` selects a single estimator; default plots all available
-- Expects columns `twonn`, `ess_a`, `ess_b` as produced by `analyze_id.py`
+```
+python scripts/analyze_id.py \
+  out/gpt2/0.124b/fp32/manifold/real_weights/run.h5 \
+  results/run_id.csv \
+  --ess-k 25,50,100        # k-sweep: ESS and LocalPCA run independently for each k
+  --pos 0                  # restrict to token position 0 (omit for all positions)
+  --depth layer_3/attn     # restrict to one depth (omit for all depths)
+  --no-entropy             # skip per-sample Shannon entropy (computed by default)
+```
+
+**Output columns** (one row per sample per cell):
+
+| column | description |
+|--------|-------------|
+| `depth`, `pos`, `sample` | cell identity |
+| `twonn` | TwoNN ID — one global estimate per (depth, pos) cell, repeated for all samples |
+| `ess_a_k{k}`, `ess_b_k{k}` | per-sample fractional ID from ESS-a / ESS-b |
+| `pca_curv_k{k}` | per-sample LocalPCA curvature — fraction of neighbourhood variance in the normal subspace (0 = flat, 1 = maximally curved) |
+| `entropy` | per-sample Shannon entropy (nats) through final LN + LM head (only with `--entropy`) |
+
+- `--ess-k` accepts a comma-separated list; ESS and LocalPCA run once per k, TwoNN and entropy run once per cell regardless
+- CSV has `#`-prefixed metadata lines — read with `pd.read_csv(f, comment='#')`
+- Results flush after each cell; cancel-safe, partial output is preserved
+- Existing output files get a timestamp suffix rather than being overwritten
+
+Depth labels follow residual-stream order: `embed → layer_0/attn → layer_0/ffn → … → layer_{L-1}/ffn → final`.
+
+### Step 3 — plot
+
+```bash
+python scripts/plot_id_sweep.py <csv_file> [--out-dir DIR] [--pos 10 20]
+```
+
+Produces one PNG per (metric, k) combination plus a k-sweep overlay per metric (when multiple k values are present):
+
+| file | content |
+|------|---------|
+| `{stem}_twonn.png` | TwoNN mean + 95% CI vs depth |
+| `{stem}_ess_a_k{k}.png` | ESS-a mean + 95% CI vs depth |
+| `{stem}_ess_b_k{k}.png` | ESS-b mean + 95% CI vs depth |
+| `{stem}_pca_curv_k{k}.png` | LocalPCA curvature mean + 95% CI vs depth |
+| `{stem}_entropy.png` | Shannon entropy mean + 95% CI vs depth (if present) |
+| `{stem}_{metric}_sweep.png` | all k values overlaid on one axes (multi-k runs only) |
+
+Each figure has two subplots: mean + shaded 95% CI band (top) and CI half-width bar chart (bottom). The 95% CI is computed as mean ± 1.96 × SE across all (sample, position) values at each depth.
 
 
 ## Residual stream across one block
