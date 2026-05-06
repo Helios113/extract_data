@@ -8,11 +8,12 @@ from .jacobian import jacobian_stats
 
 @dataclass
 class Config:
-    d_model:    int = 64
-    n_heads:    int = 4
-    n_layers:   int = 2
-    vocab_size: int = 256
+    d_model:    int = 1024
+    n_heads:    int = 16
+    n_layers:   int = 3
+    vocab_size: int = 64
     mlp_expand: int = 4
+    rope_base:  int = 10000
 
 
 class RMSNorm(nn.Module):
@@ -24,6 +25,32 @@ class RMSNorm(nn.Module):
         return x / (x.pow(2).mean(-1, keepdim=True) + 1e-6).sqrt() * self.w
 
 
+class RotaryEmbedding(nn.Module):
+    def __init__(self, d_head: int, base: int = 10000):
+        super().__init__()
+        inv_freq = 1.0 / (base ** (torch.arange(0, d_head, 2).float() / d_head))
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+
+    def forward(self, x, position_ids):
+        # position_ids: (B, seq); inv_freq: (d_head/2,)
+        # returns (cos, sin) each (B, 1, seq, d_head) — ready to broadcast over heads
+        t = torch.einsum("bs,d->bsd", position_ids.float(), self.inv_freq)  # (B, seq, d_head/2)
+        emb = torch.cat([t, t], dim=-1)                                      # (B, seq, d_head)
+        return emb.cos().unsqueeze(1), emb.sin().unsqueeze(1)
+
+
+def _rotate_half(x):
+    half = x.shape[-1] // 2
+    return torch.cat([-x[..., half:], x[..., :half]], dim=-1)
+
+
+def _apply_rope(q, k, cos, sin):
+    # q, k: (B, n_heads, seq, d_head); cos, sin: (B, 1, seq, d_head)
+    q = q * cos + _rotate_half(q) * sin
+    k = k * cos + _rotate_half(k) * sin
+    return q, k
+
+
 class Attention(nn.Module):
     def __init__(self, cfg: Config):
         super().__init__()
@@ -32,10 +59,12 @@ class Attention(nn.Module):
         self.qkv = nn.Linear(cfg.d_model, 3 * cfg.d_model, bias=False)
         self.o   = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
 
-    def forward(self, x):
+    def forward(self, x, position_embeddings):
         B, T, D = x.shape
+        cos, sin = position_embeddings
         q, k, v = self.qkv(x).chunk(3, dim=-1)
         q, k, v = (t.view(B, T, self.n_heads, self.d_head).transpose(1, 2) for t in (q, k, v))
+        q, k = _apply_rope(q, k, cos, sin)
         mask = torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), 1)
         w = (q @ k.transpose(-2, -1) / self.d_head ** 0.5).masked_fill(mask, -1e9).softmax(-1)
         return self.o((w @ v).transpose(1, 2).reshape(B, T, D))
@@ -60,8 +89,8 @@ class AttnResidual(nn.Module):
         self.input_layernorm = RMSNorm(cfg.d_model)
         self.self_attn       = Attention(cfg)
 
-    def forward(self, x):
-        return x + self.self_attn(self.input_layernorm(x))
+    def forward(self, x, position_embeddings):
+        return x + self.self_attn(self.input_layernorm(x), position_embeddings)
 
 
 class FFNResidual(nn.Module):
@@ -96,8 +125,8 @@ class Block(nn.Module):
     @property
     def mlp(self):                      return self.ffn.mlp
 
-    def forward(self, x):
-        x = self.attn(x)
+    def forward(self, x, position_embeddings):
+        x = self.attn(x, position_embeddings)
         x = self.ffn(x)
         return x
 
@@ -105,9 +134,11 @@ class Block(nn.Module):
 class CustomModel(nn.Module):
     def __init__(self, cfg: Config):
         super().__init__()
-        self.embed  = nn.Embedding(cfg.vocab_size, cfg.d_model)
-        self.layers = nn.ModuleList([Block(cfg) for _ in range(cfg.n_layers)])
-        self.norm   = RMSNorm(cfg.d_model)
+        d_head = cfg.d_model // cfg.n_heads
+        self.embed       = nn.Embedding(cfg.vocab_size, cfg.d_model)
+        self.rotary_emb  = RotaryEmbedding(d_head, base=cfg.rope_base)
+        self.layers      = nn.ModuleList([Block(cfg) for _ in range(cfg.n_layers)])
+        self.norm        = RMSNorm(cfg.d_model)
 
     def forward(self, input_ids=None, inputs_embeds=None):
         if inputs_embeds is not None:
@@ -116,8 +147,11 @@ class CustomModel(nn.Module):
             if input_ids.dim() == 1:
                 input_ids = input_ids.unsqueeze(0)
             x = self.embed(input_ids)
+        B, T, _ = x.shape
+        position_ids = torch.arange(T, device=x.device).unsqueeze(0).expand(B, -1)
+        rope = self.rotary_emb(x, position_ids)
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, rope)
         return self.norm(x)
 
 
@@ -136,15 +170,20 @@ def extract_direct(
     """
     layer = model.layers[layer_idx]
 
+    def _rope(x):
+        B, T, _ = x.shape
+        position_ids = torch.arange(T, device=x.device).unsqueeze(0).expand(B, -1)
+        return model.rotary_emb(x, position_ids)
+
     with torch.no_grad():
         x = inputs if inputs.is_floating_point() else model.embed(inputs)
         for i in range(layer_idx):
-            x = model.layers[i](x)
+            x = model.layers[i](x, _rope(x))
         if sublayer == "ffn":
-            x = layer.attn(x)
+            x = layer.attn(x, _rope(x))
 
     x_leaf = x.detach().requires_grad_(True)
-    out    = layer.attn(x_leaf) if sublayer == "attn" else layer.ffn(x_leaf)
+    out    = layer.attn(x_leaf, _rope(x_leaf)) if sublayer == "attn" else layer.ffn(x_leaf)
     # jac    = _block_jac_from_graph(out, x_leaf)
     # stats  = jacobian_stats(jac)
     # return x_leaf.detach().cpu(), {k: v.cpu() for k, v in stats.items()}

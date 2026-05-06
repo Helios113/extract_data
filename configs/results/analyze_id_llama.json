@@ -1,0 +1,17 @@
+{
+  "out_dir": "results/id_est/llama",
+  "ess_k": "25",
+  "runs": [
+    "configs/llama/fp32/manifolds/real_weights/llama_flat_Rsmall_noise0p2_d30_n1024_s64.json",
+    "configs/llama/fp32/manifolds/real_weights/llama_flat_Rsmall_noise0p05_d30_n1024_s64.json",
+    "configs/llama/fp32/manifolds/real_weights/llama_flat_Rsmall_nonoise_d30_n1024_s64.json",
+    "configs/llama/fp32/manifolds/synthetic_weights/llama_flat_Rsmall_noise0p2_d30_n1024_s64.json",
+    "configs/llama/fp32/manifolds/synthetic_weights/llama_flat_Rsmall_noise0p05_d30_n1024_s64.json",
+    "configs/llama/fp32/manifolds/synthetic_weights/llama_flat_Rsmall_nonoise_d30_n1024_s64.json",
+    "configs/llama/fp32/datasets/llama_c4_bg_n1024_s64.json",
+    "configs/llama/fp32/datasets/llama_c4_n1024_s64.json",
+    "configs/llama/fp32/datasets/llama_gsm8k_n1024_s64.json",
+    "configs/llama/fp32/datasets/llama_random_tokens_n1024_s64.json",
+    "configs/llama/fp32/datasets/llama_wikitext_n1024_s64.json"
+  ]
+}

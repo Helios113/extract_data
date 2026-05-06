@@ -1,9 +1,9 @@
 {
   "filename": "flat_Rsmall_noise0p05_d30_n1024_s64.h5",
-  "hash": "e02a61dcb5442d83bb60d1abcf30988d",
-  "size": 4981593302,
-  "mtime": 1777881840.6868634,
-  "uploaded_at": 1777882254.247509,
+  "hash": "2515b6a8141ab57d766c36581147aca9",
+  "size": 4981173425,
+  "mtime": 1778037152.9465513,
+  "uploaded_at": 1778037564.180958,
   "original_path": "out/gpt2/0.124b/fp32/manifold/real_weights/flat_Rsmall_noise0p05_d30_n1024_s64.h5",
   "h5_meta": {
     "ambient_dim": 31,

@@ -1,5 +1,5 @@
 import torch
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModel, AutoTokenizer, AutoConfig
 
 # QuantFactory GGUF repos carry no tokenizer; map to the canonical base model.
 _GGUF_TOKENIZER = {
@@ -18,7 +18,7 @@ def load(model_name: str, device: str = "cpu"):
         tok_repo = _GGUF_TOKENIZER.get(repo, repo)
         tok = AutoTokenizer.from_pretrained(tok_repo)
     else:
-        model = AutoModel.from_pretrained(model_name, **kwargs)
+        model = AutoModel.from_pretrained(model_name,**kwargs)
         tok = AutoTokenizer.from_pretrained(model_name)
     return model.eval(), tok
 
@@ -119,13 +119,16 @@ def _sublayer_fn_pythia(layer, model, sublayer):
     return f
 
 
-def _sublayer_fn_custom(layer, _model, sublayer):
+def _sublayer_fn_custom(layer, model, sublayer):
     if sublayer == "attn":
-        def f(x):   # x: (seq, d)
-            return layer.attn(x.unsqueeze(0)).squeeze(0)
+        def f(x):   # x: (B, seq, d)
+            B, T, _ = x.shape
+            position_ids = torch.arange(T, device=x.device).unsqueeze(0).expand(B, -1)
+            rope = model.rotary_emb(x, position_ids)
+            return layer.attn(x, rope)
     else:
-        def f(x):
-            return layer.ffn(x.unsqueeze(0)).squeeze(0)
+        def f(x):   # x: (B, seq, d)
+            return layer.ffn(x)
     return f
 
 
@@ -138,16 +141,14 @@ _SUBLAYER_FN_REGISTRY = {
 }
 
 
-# Per-architecture getters for the attn and ffn submodules used in capture_all_hidden.
-# Each value is (attn_getter, ffn_getter) where getter: layer -> nn.Module.
-# For parallel-residual architectures (Pythia), both getters return the same
-# module (attention) and the key stored is "block" not "attn"/"ffn".
-_CAPTURE_MODS = {
-    "GPT2Model":    (lambda l: l.attn,              lambda l: l.mlp),
-    "LlamaModel":   (lambda l: l.self_attn,         lambda l: l.mlp),
-    "Qwen3Model":   (lambda l: l.self_attn,         lambda l: l.mlp),
-    "GPTNeoXModel": (lambda l: l.attention,         lambda l: l.mlp),
-    "CustomModel":  (lambda l: l.attn.self_attn,    lambda l: l.ffn.mlp),
+# Per-architecture getter for the FFN norm module, whose input is x + attn(LN(x)).
+# Pre-hooking this norm captures the raw post-attention residual stream.
+# GPTNeoX uses a parallel residual — there is no sequential post-attn point.
+_FFN_NORM = {
+    "GPT2Model":   lambda l: l.ln_2,
+    "LlamaModel":  lambda l: l.post_attention_layernorm,
+    "Qwen3Model":  lambda l: l.post_attention_layernorm,
+    "CustomModel": lambda l: l.ffn.post_attention_layernorm,
 }
 
 
@@ -162,6 +163,18 @@ def _sublayer_fn(layer, sublayer, model=None):
             f"Supported: {list(_SUBLAYER_FN_REGISTRY)}"
         )
     return _SUBLAYER_FN_REGISTRY[arch](layer, model, sublayer)
+
+def _causal_attention_mask(inputs: torch.Tensor) -> torch.Tensor:
+    if inputs.dim() == 1:
+        batch, seq = 1, inputs.shape[0]
+    elif inputs.dim() == 2:
+        if inputs.is_floating_point():
+            batch, seq = 1, inputs.shape[0]
+        else:
+            batch, seq = inputs.shape
+    else:
+        batch, seq = inputs.shape[:2]
+    return torch.ones((batch, seq), device=inputs.device, dtype=torch.bool)
 
 
 
@@ -191,13 +204,12 @@ def capture_all_hidden(
     handles = []
     arch    = type(model).__name__
 
-    if arch not in _CAPTURE_MODS:
+    if arch not in _FFN_NORM and arch != "GPTNeoXModel":
         raise ValueError(
             f"Unsupported architecture {arch!r}. "
-            f"Register it in _CAPTURE_MODS. "
-            f"Supported: {list(_CAPTURE_MODS)}"
+            f"Register it in _FFN_NORM. "
+            f"Supported: {list(_FFN_NORM)} (plus GPTNeoXModel)"
         )
-    attn_getter, ffn_getter = _CAPTURE_MODS[arch]
 
     # embed_out: residual entering block 0
     def _hook_embed(_mod, args):
@@ -212,12 +224,11 @@ def capture_all_hidden(
                 store[(_i, "block")] = a.detach().cpu().clone()
             handles.append(layer.register_forward_hook(_hook_block))
         else:
-            # attn out = x + attn(LN(x)) = input to the ffn submodule
-            ffn_mod = ffn_getter(layer)
+            # Pre-hook the FFN norm: its input is x + attn(LN(x))
             def _hook_attn_out(_mod, args, _i=i):
                 x = args[0] if isinstance(args, tuple) else args
                 store[(_i, "attn")] = x.detach().cpu().clone()
-            handles.append(ffn_mod.register_forward_pre_hook(_hook_attn_out))
+            handles.append(_FFN_NORM[arch](layer).register_forward_pre_hook(_hook_attn_out))
 
             # ffn out = x + ffn(LN(x)) = layer output
             def _hook_ffn_out(_mod, _inp, out, _i=i):
@@ -232,10 +243,18 @@ def capture_all_hidden(
     handles.append(layers[-1].register_forward_hook(_hook_final))
 
     with torch.no_grad():
-        if inputs.is_floating_point():
-            model(inputs_embeds=inputs)
+        from .custom_model import CustomModel
+        if isinstance(model, CustomModel):
+            if inputs.is_floating_point():
+                model(inputs_embeds=inputs)
+            else:
+                model(inputs)
         else:
-            model(inputs)
+            attention_mask = _causal_attention_mask(inputs)
+            if inputs.is_floating_point():
+                model(inputs_embeds=inputs, attention_mask=attention_mask)
+            else:
+                model(inputs, attention_mask=attention_mask)
 
     for h in handles:
         h.remove()
@@ -266,10 +285,18 @@ def capture_endpoints(
     )
 
     with torch.no_grad():
-        if inputs.is_floating_point():
-            model(inputs_embeds=inputs)
+        from .custom_model import CustomModel
+        if isinstance(model, CustomModel):
+            if inputs.is_floating_point():
+                model(inputs_embeds=inputs)
+            else:
+                model(inputs)
         else:
-            model(inputs)
+            attention_mask = _causal_attention_mask(inputs)
+            if inputs.is_floating_point():
+                model(inputs_embeds=inputs, attention_mask=attention_mask)
+            else:
+                model(inputs, attention_mask=attention_mask)
 
     handle_embed.remove()
     handle_final.remove()

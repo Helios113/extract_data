@@ -1,0 +1,19 @@
+{
+  "model": "Qwen/Qwen3-0.6B",
+  "device": "cuda",
+  "weights": "random",
+  "output": "out/qwen/0.6b/bf16/manifold/synthetic_weights/singularity_syn.h5",
+  "compute_jacobians": false,
+  "wandb": false,
+  "sampling": {
+    "n_samples": 500,
+    "seq_len": 64,
+    "batch_size": 100
+  },
+  "source": {
+    "type": "flat_plane",
+    "manifold_dim": 30,
+    "seed": 42
+  },
+  "done": true
+}

@@ -1,0 +1,9 @@
+{
+  "out_dir": "results/id_est/pythia",
+  "ess_k": "25",
+  "runs": [
+    "configs/pythia/1.4b/fp32/manifolds/synthetic_weights/pythia_1.4b_flat_Rsmall_noise0p2_d30_n1024_s64.json",
+    "configs/pythia/1.4b/fp32/manifolds/synthetic_weights/pythia_1.4b_flat_Rsmall_noise0p05_d30_n1024_s64.json",
+    "configs/pythia/1.4b/fp32/manifolds/synthetic_weights/pythia_1.4b_flat_Rsmall_nonoise_d30_n1024_s64.json",
+  ]
+}

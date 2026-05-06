@@ -1,0 +1,9 @@
+{
+  "out_dir": "results/id_est/gpt2",
+  "ess_k": "25",
+  "runs": [
+    "configs/gpt2/0.124b/2bit/manifolds/real_weights/gpt2_flat_Rsmall_noise0p2_d30_n1024_s64.json",
+    "configs/gpt2/0.124b/4bit/manifolds/real_weights/gpt2_flat_Rsmall_noise0p2_d30_n1024_s64.json",
+    "configs/gpt2/0.124b/8bit/manifolds/real_weights/gpt2_flat_Rsmall_noise0p2_d30_n1024_s64.json"
+  ]
+}

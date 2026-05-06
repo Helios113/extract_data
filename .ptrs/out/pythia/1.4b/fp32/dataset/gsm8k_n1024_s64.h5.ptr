@@ -2,16 +2,29 @@
   "filename": "gsm8k_n1024_s64.h5",
   "hash": "9fedff9e791ed9fd94479b9599405f7c",
   "size": 8092765571,
-  "mtime": 1777631733.6347852,
-  "uploaded_at": 1777632195.358621,
+  "mtime": 1778051621.3148263,
+  "uploaded_at": 1778051902.664793,
   "original_path": "out/pythia/1.4b/fp32/dataset/gsm8k_n1024_s64.h5",
   "h5_meta": {
-    "model": "EleutherAI/pythia-1.4b",
-    "weights": "real",
-    "source_type": "dataset",
-    "n_samples": 1024,
-    "seq_len": 64,
     "batch_size": 100,
-    "status": "complete"
+    "compute_jacobian_stats": false,
+    "compute_jacobians": false,
+    "d_model": 2048,
+    "dataset_config": "main",
+    "dataset_name": "openai/gsm8k",
+    "model": "EleutherAI/pythia-1.4b",
+    "n_layers": 24,
+    "n_samples": 1024,
+    "n_tokens": 65536,
+    "seq_len": 64,
+    "source_type": "dataset",
+    "split": "train",
+    "status": "complete",
+    "text_column": [
+      "question",
+      "answer"
+    ],
+    "tokenizer": "EleutherAI/pythia-1.4b",
+    "weights": "real"
   }
 }

@@ -1,0 +1,17 @@
+{
+  "out_dir": "results/id_est/pythia",
+  "ess_k": "25",
+  "runs": [
+    "configs/pythia/160m/fp32/manifolds/real_weights/pythia_160m_flat_Rsmall_noise0p2_d30_n1024_s64.json",
+    "configs/pythia/160m/fp32/manifolds/real_weights/pythia_160m_flat_Rsmall_noise0p05_d30_n1024_s64.json",
+    "configs/pythia/160m/fp32/manifolds/real_weights/pythia_160m_flat_Rsmall_nonoise_d30_n1024_s64.json",
+    "configs/pythia/160m/fp32/manifolds/synthetic_weights/pythia_160m_flat_Rsmall_noise0p2_d30_n1024_s64.json",
+    "configs/pythia/160m/fp32/manifolds/synthetic_weights/pythia_160m_flat_Rsmall_noise0p05_d30_n1024_s64.json",
+    "configs/pythia/160m/fp32/manifolds/synthetic_weights/pythia_160m_flat_Rsmall_nonoise_d30_n1024_s64.json",
+    "configs/pythia/160m/fp32/datasets/pythia_160m_c4_bg_n1024_s64.json",
+    "configs/pythia/160m/fp32/datasets/pythia_160m_c4_n1024_s64.json",
+    "configs/pythia/160m/fp32/datasets/pythia_160m_gsm8k_n1024_s64.json",
+    "configs/pythia/160m/fp32/datasets/pythia_160m_random_tokens_n1024_s64.json",
+    "configs/pythia/160m/fp32/datasets/pythia_160m_wikitext_n1024_s64.json"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "filename": "wikitext_n1024_s64.h5",
+  "hash": "d13134aac76871144825b5bead68f185",
+  "size": 1624081345,
+  "mtime": 1778038847.9807005,
+  "uploaded_at": 1778039015.578097,
+  "original_path": "out/pythia/160m/fp32/dataset/wikitext_n1024_s64.h5",
+  "h5_meta": {
+    "approx_sigma_probes": 64,
+    "batch_size": 100,
+    "compute_approx_sigma": false,
+    "compute_jacobian_stats": false,
+    "compute_jacobians": false,
+    "d_model": 768,
+    "dataset_config": "wikitext-2-raw-v1",
+    "dataset_name": "Salesforce/wikitext",
+    "model": "EleutherAI/pythia-160m",
+    "n_layers": 12,
+    "n_samples": 1024,
+    "n_tokens": 65536,
+    "seq_len": 64,
+    "source_type": "dataset",
+    "split": "train",
+    "status": "complete",
+    "text_column": "text",
+    "tokenizer": "EleutherAI/pythia-160m",
+    "weights": "real"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "filename": "gpt2_real_singularity_small.h5",
+  "hash": "dee2472283ececc40636a7aabd862c8f",
+  "size": 4901019078,
+  "mtime": 1778062366.2777734,
+  "uploaded_at": 1778062798.968982,
+  "original_path": "out/gpt2/0.124b/fp32/manifold/real_weights/gpt2_real_singularity_small.h5",
+  "h5_meta": {
+    "approx_sigma_probes": 64,
+    "batch_size": 100,
+    "compute_approx_sigma": false,
+    "compute_jacobian_stats": false,
+    "compute_jacobians": false,
+    "d_model": 768,
+    "manifold_dim": 8,
+    "model": "openai-community/gpt2",
+    "n_layers": 12,
+    "n_samples": 1024,
+    "n_tokens": 65536,
+    "seed": 42,
+    "seq_len": 64,
+    "source_type": "flat_plane",
+    "status": "complete",
+    "weights": "random"
+  }
+}

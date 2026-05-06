@@ -1,0 +1,26 @@
+{
+  "filename": "singularity_syn_small.h5",
+  "hash": "a444e18ede28a637f75f11b890e48db8",
+  "size": 5161385283,
+  "mtime": 1778061667.8347118,
+  "uploaded_at": 1778062209.302197,
+  "original_path": "out/qwen/1.7b/bf16/manifold/synthetic_weights/singularity_syn_small.h5",
+  "h5_meta": {
+    "approx_sigma_probes": 64,
+    "batch_size": 100,
+    "compute_approx_sigma": false,
+    "compute_jacobian_stats": false,
+    "compute_jacobians": false,
+    "d_model": 2048,
+    "manifold_dim": 8,
+    "model": "Qwen/Qwen3-1.7B",
+    "n_layers": 28,
+    "n_samples": 500,
+    "n_tokens": 32000,
+    "seed": 42,
+    "seq_len": 64,
+    "source_type": "flat_plane",
+    "status": "complete",
+    "weights": "random"
+  }
+}

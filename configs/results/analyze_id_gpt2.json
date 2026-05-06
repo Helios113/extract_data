@@ -1,0 +1,17 @@
+{
+  "out_dir": "results/id_est/gpt2",
+  "ess_k": "25",
+  "runs": [
+    "configs/gpt2/0.124b/fp32/manifolds/real_weights/gpt2_flat_Rsmall_noise0p2_d30_n1024_s64.json",
+    "configs/gpt2/0.124b/fp32/manifolds/real_weights/gpt2_flat_Rsmall_noise0p05_d30_n1024_s64.json",
+    "configs/gpt2/0.124b/fp32/manifolds/real_weights/gpt2_flat_Rsmall_nonoise_d30_n1024_s64.json",
+    "configs/gpt2/0.124b/fp32/datasets/gpt2_c4_bg_n1024_s64.json",
+    "configs/gpt2/0.124b/fp32/datasets/gpt2_c4_n1024_s64.json",
+    "configs/gpt2/0.124b/fp32/datasets/gpt2_gsm8k_n1024_s64.json",
+    "configs/gpt2/0.124b/fp32/datasets/gpt2_random_tokens_n1024_s64.json",
+    "configs/gpt2/0.124b/fp32/datasets/gpt2_wikitext_n1024_s64.json",
+    "configs/gpt2/0.124b/fp32/manifolds/synthetic_weights/gpt2_flat_Rsmall_noise0p2_d30_n1024_s64.json",
+    "configs/gpt2/0.124b/fp32/manifolds/synthetic_weights/gpt2_flat_Rsmall_noise0p05_d30_n1024_s64.json",
+    "configs/gpt2/0.124b/fp32/manifolds/synthetic_weights/gpt2_flat_Rsmall_nonoise_d30_n1024_s64.json"
+  ]
+}

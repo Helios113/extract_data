@@ -1,17 +1,32 @@
 {
   "filename": "gsm8k_n1024_s64.h5",
-  "hash": "7603b86a5d9e3bde1683a1e83a91a8ac",
-  "size": 13241000472,
-  "mtime": 1777628799.0372844,
-  "uploaded_at": 1777629590.303073,
+  "hash": "778530758eb1c33c84f0ff07d358cbd6",
+  "size": 6462548040,
+  "mtime": 1778037531.9435847,
+  "uploaded_at": 1778038120.301759,
   "original_path": "out/qwen/1.7b/bf16/dataset/gsm8k_n1024_s64.h5",
   "h5_meta": {
-    "model": "Qwen/Qwen3-1.7B",
-    "weights": "real",
-    "source_type": "dataset",
-    "n_samples": 1024,
-    "seq_len": 64,
+    "approx_sigma_probes": 64,
     "batch_size": 100,
-    "status": "complete"
+    "compute_approx_sigma": false,
+    "compute_jacobian_stats": false,
+    "compute_jacobians": false,
+    "d_model": 2048,
+    "dataset_config": "main",
+    "dataset_name": "openai/gsm8k",
+    "model": "Qwen/Qwen3-1.7B",
+    "n_layers": 28,
+    "n_samples": 500,
+    "n_tokens": 32000,
+    "seq_len": 64,
+    "source_type": "dataset",
+    "split": "train",
+    "status": "complete",
+    "text_column": [
+      "question",
+      "answer"
+    ],
+    "tokenizer": "Qwen/Qwen3-1.7B",
+    "weights": "real"
   }
 }

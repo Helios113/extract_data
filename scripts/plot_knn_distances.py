@@ -113,8 +113,6 @@ def plot_histogram(all_dists: np.ndarray, model_name: str, out_path: Path):
 
     zero_note = (
         f"No exact zeros ({n_total} distances total)"
-        if n_zeros == 0
-        else f"{n_zeros}/{n_total} exact zeros excluded (shown on log axis)"
     )
     ax.set_xlabel(f"Nearest-neighbour distance (log scale)\n{zero_note}", fontsize=10)
     ax.set_ylabel("Density", fontsize=12)
@@ -128,60 +126,52 @@ def plot_histogram(all_dists: np.ndarray, model_name: str, out_path: Path):
     print(f"Saved histogram → {out_path}")
 
 
-def plot_heatmap(mean_grid: np.ndarray, std_grid: np.ndarray,
-                 depth_labels: list[str], seq_len: int,
-                 model_name: str, out_path: Path):
-    """
-    mean_grid / std_grid: (n_depths, seq_len)
-    y-axis: token position (0 at top)
-    x-axis: depth
-    """
-    n_depths = len(depth_labels)
-
-    fig, axes = plt.subplots(2, 1, figsize=(max(8, n_depths * 0.35), 8), sharex=True)
-
+def _plot_single_heatmap(grid: np.ndarray, depth_labels: list[str],
+                          title: str, model_name: str, out_path: Path):
     from matplotlib.colors import LogNorm
+    n_depths = len(depth_labels)
+    n_zeros = int((grid == 0).sum())
+    g = grid.T.copy()
+    g = np.clip(g, np.finfo(np.float32).tiny, None)
 
-    global_min = min(grid[grid > 0].min() for grid in [mean_grid, std_grid])
-
-    for ax, grid, title in zip(
-        axes,
-        [mean_grid, std_grid],
-        ["Mean NN distance", "Std of NN distance"],
-    ):
-        n_zeros = int((grid == 0).sum())
-        g = grid.T.copy()
-        g = np.clip(g, np.finfo(np.float32).tiny, None)
-        im = ax.imshow(
-            g,
-            aspect="auto",
-            origin="upper",
-            interpolation="nearest",
-            cmap="viridis",
-            norm=LogNorm(vmin=g.min(), vmax=g.max()),
-        )
-        cb = fig.colorbar(im, ax=ax, pad=0.01, fraction=0.03)
-        cb.ax.yaxis.set_major_formatter(ticker.LogFormatterSciNotation())
-        cb.set_label(
-            f"distance (log)\nmin={g.min():.3g}  —  no zeros"
-            if n_zeros == 0
-            else f"distance (log)\n{n_zeros} zeros clipped to {np.finfo(np.float32).tiny:.1e}",
-            fontsize=8,
-        )
-        ax.set_ylabel("Token position", fontsize=11)
-        ax.set_title(title, fontsize=11)
-        ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True, nbins=8))
-
-    # shared x-axis ticks
-    axes[-1].set_xticks(range(n_depths))
-    axes[-1].set_xticklabels(depth_labels, rotation=60, ha="right", fontsize=7)
-    axes[-1].set_xlabel("Depth", fontsize=11)
-
-    fig.suptitle(f"NN distances per location — {model_name}", fontsize=12, y=1.01)
+    fig, ax = plt.subplots(figsize=(max(8, n_depths * 0.35), 4))
+    im = ax.imshow(
+        g,
+        aspect="auto",
+        origin="upper",
+        interpolation="nearest",
+        cmap="viridis",
+        norm=LogNorm(vmin=g.min(), vmax=g.max()),
+    )
+    cb = fig.colorbar(im, ax=ax, pad=0.01, fraction=0.03)
+    cb.ax.yaxis.set_major_formatter(ticker.LogFormatterSciNotation())
+    cb.set_label(
+        f"distance (log)\nmin={g.min():.3g}  —  no zeros"
+        if n_zeros == 0
+        else f"distance (log)\n{n_zeros} zeros clipped to {np.finfo(np.float32).tiny:.1e}",
+        fontsize=8,
+    )
+    ax.set_ylabel("Token position", fontsize=11)
+    ax.set_title(f"{title} — {model_name}", fontsize=11)
+    ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True, nbins=8))
+    ax.set_xticks(range(n_depths))
+    ax.set_xticklabels(depth_labels, rotation=60, ha="right", fontsize=7)
+    ax.set_xlabel("Depth", fontsize=11)
     fig.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved heatmap   → {out_path}")
+
+
+def plot_heatmap(mean_grid: np.ndarray, std_grid: np.ndarray,
+                 depth_labels: list[str],
+                 model_name: str, out_path: Path):
+    stem = out_path.with_suffix("")
+    suffix = out_path.suffix
+    _plot_single_heatmap(mean_grid, depth_labels, "Mean NN distance",
+                         model_name, Path(f"{stem}_mean{suffix}"))
+    _plot_single_heatmap(std_grid,  depth_labels, "Std of NN distance",
+                         model_name, Path(f"{stem}_std{suffix}"))
 
 
 # ─── data loading ────────────────────────────────────────────────────────────
@@ -267,7 +257,7 @@ def main():
         out_dir.mkdir(parents=True, exist_ok=True)
 
         print("Loading from CSV ...")
-        depths, seq_len, mean_grid, std_grid, all_dists = load_from_csv(raw_path)
+        depths, _, mean_grid, std_grid, all_dists = load_from_csv(raw_path)
     else:
         h5_path = Path(args.h5_file).resolve()
         root = Path.cwd()
@@ -292,7 +282,7 @@ def main():
         print(f"Saved raw CSV → {raw_path}")
 
     plot_histogram(all_dists, model_name, out_dir / f"{stem}_nn_hist.pdf")
-    plot_heatmap(mean_grid, std_grid, depths, seq_len, model_name, out_dir / f"{stem}_nn_heatmap.pdf")
+    plot_heatmap(mean_grid, std_grid, depths, model_name, out_dir / f"{stem}_nn_heatmap.pdf")
 
 
 if __name__ == "__main__":

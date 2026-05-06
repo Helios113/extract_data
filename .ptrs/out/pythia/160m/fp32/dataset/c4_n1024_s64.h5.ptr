@@ -1,0 +1,29 @@
+{
+  "filename": "c4_n1024_s64.h5",
+  "hash": "7a92cfd40fe0ca5130e5644890356332",
+  "size": 1621856244,
+  "mtime": 1778038849.5507007,
+  "uploaded_at": 1778039020.330801,
+  "original_path": "out/pythia/160m/fp32/dataset/c4_n1024_s64.h5",
+  "h5_meta": {
+    "approx_sigma_probes": 64,
+    "batch_size": 100,
+    "compute_approx_sigma": false,
+    "compute_jacobian_stats": false,
+    "compute_jacobians": false,
+    "d_model": 768,
+    "dataset_config": "en",
+    "dataset_name": "allenai/c4",
+    "model": "EleutherAI/pythia-160m",
+    "n_layers": 12,
+    "n_samples": 1024,
+    "n_tokens": 65536,
+    "seq_len": 64,
+    "source_type": "dataset",
+    "split": "train",
+    "status": "complete",
+    "text_column": "text",
+    "tokenizer": "EleutherAI/pythia-160m",
+    "weights": "real"
+  }
+}

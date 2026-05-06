@@ -1,17 +1,32 @@
 {
   "filename": "gsm8k_n1024_s64.h5",
-  "hash": "f5375412dd2e22a817cfd589607fc3fc",
-  "size": 4903780418,
-  "mtime": 1777645171.3608158,
-  "uploaded_at": 1777646725.475931,
+  "hash": "16e18fbc538bfc1a01a398196dbaf726",
+  "size": 2396719431,
+  "mtime": 1778038371.7006586,
+  "uploaded_at": 1778038369.625479,
   "original_path": "out/gpt2/0.124b/fp32/dataset/gsm8k_n1024_s64.h5",
   "h5_meta": {
-    "model": "openai-community/gpt2",
-    "weights": "real",
-    "source_type": "dataset",
-    "n_samples": 1024,
-    "seq_len": 64,
+    "approx_sigma_probes": 64,
     "batch_size": 100,
-    "status": "complete"
+    "compute_approx_sigma": false,
+    "compute_jacobian_stats": false,
+    "compute_jacobians": false,
+    "d_model": 768,
+    "dataset_config": "main",
+    "dataset_name": "openai/gsm8k",
+    "model": "openai-community/gpt2",
+    "n_layers": 12,
+    "n_samples": 500,
+    "n_tokens": 32000,
+    "seq_len": 64,
+    "source_type": "dataset",
+    "split": "train",
+    "status": "complete",
+    "text_column": [
+      "question",
+      "answer"
+    ],
+    "tokenizer": "openai-community/gpt2",
+    "weights": "real"
   }
 }

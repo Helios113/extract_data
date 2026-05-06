@@ -1,0 +1,19 @@
+{
+  "model": "EleutherAI/pythia-160m",
+  "device": "cuda",
+  "weights": "real",
+  "output": "out/pythia/160m/fp32/manifold/real_weights/pythia_160m_real_singularity.h5",
+  "compute_jacobians": false,
+  "wandb": false,
+  "sampling": {
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100
+  },
+    "source": {
+    "type": "flat_plane",
+    "manifold_dim": 30,
+    "seed": 42
+  }
+  
+}

@@ -1,0 +1,29 @@
+{
+  "filename": "wikitext_n1024_s64.h5",
+  "hash": "252dbff1ec44b8a9680350a42e607367",
+  "size": 3788512301,
+  "mtime": 1778038477.452668,
+  "uploaded_at": 1778038476.907373,
+  "original_path": "out/llama/1B/fp32/dataset/wikitext_n1024_s64.h5",
+  "h5_meta": {
+    "approx_sigma_probes": 64,
+    "batch_size": 100,
+    "compute_approx_sigma": false,
+    "compute_jacobian_stats": false,
+    "compute_jacobians": false,
+    "d_model": 2048,
+    "dataset_config": "wikitext-2-raw-v1",
+    "dataset_name": "Salesforce/wikitext",
+    "model": "meta-llama/Llama-3.2-1B",
+    "n_layers": 16,
+    "n_samples": 500,
+    "n_tokens": 32000,
+    "seq_len": 64,
+    "source_type": "dataset",
+    "split": "train",
+    "status": "complete",
+    "text_column": "text",
+    "tokenizer": "meta-llama/Llama-3.2-1B",
+    "weights": "real"
+  }
+}

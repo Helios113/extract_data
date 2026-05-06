@@ -2,8 +2,8 @@
   "filename": "flat_Rsmall_nonoise_d30_n1024_s64.h5",
   "hash": "29af6b559f6226e5b6d210bf88c486e2",
   "size": 13773860176,
-  "mtime": 1777863650.8612602,
-  "uploaded_at": 1777864918.594767,
+  "mtime": 1778028654.9258022,
+  "uploaded_at": 1778035010.60473,
   "original_path": "out/qwen/1.7b/bf16/manifold/real_weights/flat_Rsmall_nonoise_d30_n1024_s64.h5",
   "h5_meta": {
     "ambient_dim": 31,

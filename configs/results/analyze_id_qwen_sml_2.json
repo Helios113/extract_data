@@ -1,0 +1,10 @@
+{
+  "out_dir": "results/id_est/qwen_s",
+  "ess_k": "25",
+  "runs": [
+    "configs/qwen/0.6b/bf16/manifolds/real_weights/qwen3_1.7b_flat_Rsmall_noise0p2_d30_n1024_s64.json",
+    "configs/qwen/0.6b/bf16/manifolds/real_weights/qwen3_1.7b_flat_Rsmall_noise0p05_d30_n1024_s64.json",
+    "configs/qwen/0.6b/bf16/manifolds/real_weights/qwen3_1.7b_flat_Rsmall_nonoise_d30_n1024_s64.json",
+    
+  ]
+}

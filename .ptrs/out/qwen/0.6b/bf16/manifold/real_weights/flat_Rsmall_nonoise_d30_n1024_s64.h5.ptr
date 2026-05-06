@@ -1,9 +1,9 @@
 {
   "filename": "flat_Rsmall_nonoise_d30_n1024_s64.h5",
-  "hash": "f923a01a9b83ff023e8abc29d139a491",
-  "size": 6907580625,
-  "mtime": 1777851784.1942143,
-  "uploaded_at": 1777852438.989801,
+  "hash": "39449eecf37173faf4ebd07f83e0f297",
+  "size": 6901648655,
+  "mtime": 1778036600.7275026,
+  "uploaded_at": 1778036599.191825,
   "original_path": "out/qwen/0.6b/bf16/manifold/real_weights/flat_Rsmall_nonoise_d30_n1024_s64.h5",
   "h5_meta": {
     "ambient_dim": 31,
@@ -51,7 +51,7 @@
     "n_samples": 1024,
     "n_tokens": 65536,
     "noise_std": 0.0,
-    "patch_radius": 0.122557,
+    "patch_radius": 0.206221,
     "project_dim": 1024,
     "seed": 42,
     "seq_len": 64,

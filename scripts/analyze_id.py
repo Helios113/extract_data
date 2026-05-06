@@ -5,23 +5,25 @@ Load an HDF5 file produced by run.py and compute, for every (token_position, dep
   - LocalPCA curvature per-point (one value per sample, uses ESS-a ID as tangent dim)
   - Shannon entropy per-point (one value per sample, via final LN + LM head)
 
-Each output CSV row represents one (depth, pos, sample) triple.
+Each output row represents one (depth, pos, sample) triple, saved as parquet.
 
 k-sweep: pass --ess-k as a comma-separated list (e.g. --ess-k 50,100,200) to run
 ESS and LocalPCA for each k independently.  TwoNN and entropy are k-independent and
 only computed once per cell.
 
 Usage:
-  python analyze_id.py <h5_file> <out_csv>
-  python analyze_id.py out/run.h5 results/out.csv --ess-k 50,100,200 --entropy
-  python analyze_id.py out/run.h5 results/out.csv --pos 10 --depth layer_2/ffn
+  python analyze_id.py <h5_file> <out_parquet>
+  python analyze_id.py out/run.h5 results/out.parquet --ess-k 50,100,200 --entropy
+  python analyze_id.py out/run.h5 results/out.parquet --pos 10 --depth layer_2/ffn
 """
 
 import argparse
-import csv
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
+
+import pandas as pd
 
 import h5py
 import numpy as np
@@ -32,7 +34,7 @@ sys.path.insert(0, "src")
 from hf_jacobian.id_estimators import (
     _ess_values_batch,
     _ess_to_id,
-    _local_pca_curvature,
+    _local_pca_curvature_per_point,
     twonn,
 )
 
@@ -46,9 +48,12 @@ def depth_keys(f: h5py.File) -> list[str]:
         key=lambda k: int(k.split("_")[1]),
     )
     for ln in layer_names:
-        for sub in ("attn", "ffn"):
-            if sub in f[ln]:
-                keys.append(f"{ln}/{sub}")
+        if "block" in f[ln]:
+            keys.append(f"{ln}/block")
+        else:
+            for sub in ("attn", "ffn"):
+                if sub in f[ln]:
+                    keys.append(f"{ln}/{sub}")
     keys.append("final")
     return keys
 
@@ -89,7 +94,18 @@ def load_entropy_lens(model_name: str):
             f"Entropy lens: unsupported architecture {arch!r}. "
             f"Supported: {list(_LN_ATTR)}"
         )
-    return _LN_ATTR[arch](causal), causal.lm_head
+    lm_head = None
+    if hasattr(causal, "get_output_embeddings"):
+        lm_head = causal.get_output_embeddings()
+    if lm_head is None:
+        lm_head = getattr(causal, "lm_head", None)
+    if lm_head is None:
+        lm_head = getattr(causal, "embed_out", None)
+    if lm_head is None:
+        raise AttributeError(
+            f"Entropy lens: model {type(causal).__name__!r} has no output head."
+        )
+    return _LN_ATTR[arch](causal), lm_head
 
 
 def compute_entropy_per_sample(X: torch.Tensor, ln, lm_head) -> np.ndarray:
@@ -109,38 +125,34 @@ def _knn_neighborhoods(X: torch.Tensor, k: int):
     nn_dists, knn_idx = dists.topk(k, dim=1, largest=False)  # (N, k)
     return X[knn_idx], nn_dists[:, 0]
 
-
 def compute_ess_and_pca(X: torch.Tensor, k: int, d: int = 1) -> dict:
     """
     ESS-a, ESS-b per-point IDs and LocalPCA curvature for a single k.
+    Local PCA uses per-point tangent dim = round(ess_a_pw[i]).
     Returns dict with keys: ess_a_pw, ess_b_pw, pca_curv_pw (all np.ndarray (N,)).
     """
-    neighborhoods, _ = _knn_neighborhoods(X, k)
+
+    neighborhoods, distances = _knn_neighborhoods(X, k)
 
     # ESS-a
     ess_a_vals = _ess_values_batch(neighborhoods, d=d, ver="a").cpu().numpy()
     ess_a_ids  = np.array([_ess_to_id(float(v), d, "a") for v in ess_a_vals])
 
-    # ESS-b (d=1 only)
-    ess_b_vals = _ess_values_batch(neighborhoods, d=1, ver="b").cpu().numpy()
-    ess_b_ids  = np.array([_ess_to_id(float(v), 1, "b") for v in ess_b_vals])
+    # # ESS-b (d=1 only)
+    # ess_b_vals = _ess_values_batch(neighborhoods, d=1, ver="b").cpu().numpy()
+    # ess_b_ids  = np.array([_ess_to_id(float(v), 1, "b") for v in ess_b_vals])
+    # # LocalPCA curvature — per-point tangent dim from ESS-a estimate
+    id_dims  = np.round(ess_a_ids).astype(int)
+    pca_curv = _local_pca_curvature_per_point(neighborhoods, id_dims)
 
-    # LocalPCA curvature — use nanmean of ESS-a as tangent dimension
-    id_dim = max(1, round(float(np.nanmean(ess_a_ids))))
-    pca_curv = _local_pca_curvature(neighborhoods, id_dim)
+    # skdim_res = ess_skdim(X, k=k, d=d, ver="a")
 
-    return {"ess_a_pw": ess_a_ids, "ess_b_pw": ess_b_ids, "pca_curv_pw": pca_curv}
-
-
-# ── CSV columns ───────────────────────────────────────────────────────────────
-
-def build_header(ks: list[int], with_entropy: bool) -> list[str]:
-    base = ["depth", "pos", "sample", "twonn"]
-    for k in ks:
-        base += [f"ess_a_k{k}", f"ess_b_k{k}", f"pca_curv_k{k}"]
-    if with_entropy:
-        base.append("entropy")
-    return base
+    return {
+        "ess_a_pw": ess_a_ids,
+        "pca_curv_pw": pca_curv,
+        "neighbourhood_size": distances
+        # "ess_skdim_pw": skdim_res["dimension_pw"],
+    }
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -149,7 +161,7 @@ def main():
     ap = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter,
                                  description=__doc__)
     ap.add_argument("h5_file")
-    ap.add_argument("out_csv", help="Path for output CSV.")
+    ap.add_argument("out_parquet", help="Path for output parquet.")
     ap.add_argument("--pos", type=int, nargs="+", default=None,
                     help="Token position(s) to process (0-indexed). Default: all.")
     ap.add_argument("--depth", type=str, default=None,
@@ -187,7 +199,6 @@ def main():
         if bad:
             sys.exit(f"Position(s) {bad} out of range [0, {seq_len}).")
 
-        header = build_header(ks, not args.no_entropy)
         n_cells = len(sel_depths) * len(positions)
 
         print(f"File       : {args.h5_file}")
@@ -197,59 +208,51 @@ def main():
         print(f"Cells      : {n_cells}")
         print()
 
-        out_path = resolve_out_path(args.out_csv)
-        with open(out_path, "w", newline="") as csv_file:
-            csv_file.write(f"# run_timestamp: {datetime.now().isoformat(timespec='seconds')}\n")
-            csv_file.write(f"# h5_file: {args.h5_file}\n")
-            csv_file.write(f"# ess_k: {ks}\n")
-            csv_file.write(f"# ess_d: {args.ess_d}\n")
-            for key, val in meta_attrs.items():
-                csv_file.write(f"# {key}: {val}\n")
+        all_rows = []
+        cell_idx = 0
+        for depth in sel_depths:
+            for pos in positions:
+                cell_idx += 1
+                print(f"  [{cell_idx}/{n_cells}] {depth}  pos={pos} ...", end="", flush=True)
 
-            writer = csv.writer(csv_file)
-            writer.writerow(header)
+                X = load_latents(f, depth, pos)   # (N, d_model)
+                N = X.shape[0]
 
-            cell_idx = 0
-            for depth in sel_depths:
-                for pos in positions:
-                    cell_idx += 1
-                    print(f"  [{cell_idx}/{n_cells}] {depth}  pos={pos} ...", end="", flush=True)
+                id_twonn = twonn(X)
+                per_k = {k: compute_ess_and_pca(X, k, d=args.ess_d) for k in ks}
 
-                    X = load_latents(f, depth, pos)   # (N, d_model)
-                    N = X.shape[0]
+                entropy_pw = None
+                if ln is not None:
+                    entropy_pw = compute_entropy_per_sample(X, ln, lm_head)
 
-                    # TwoNN — one scalar for the whole cell
-                    id_twonn = twonn(X)
+                for i in range(N):
+                    row = {"depth": depth, "pos": pos, "sample": i, "twonn": id_twonn}
+                    for k in ks:
+                        row[f"ess_a_k{k}"]    = float(per_k[k]["ess_a_pw"][i])
+                        row[f"pca_curv_k{k}"] = float(per_k[k]["pca_curv_pw"][i])
+                        row[f"nbh_size_k{k}"] = float(per_k[k]["neighbourhood_size"][i])
+                    if entropy_pw is not None:
+                        row["entropy"] = float(entropy_pw[i])
+                    all_rows.append(row)
 
-                    # ESS + LocalPCA for each k — returns per-sample arrays
-                    per_k = {k: compute_ess_and_pca(X, k, d=args.ess_d) for k in ks}
+                k0 = ks[0]
+                ess_a_mean = float(np.nanmean(per_k[k0]["ess_a_pw"]))
+                dist_mean  = float(np.nanmean(per_k[k0]["neighbourhood_size"]))
+                print(f"  twonn={id_twonn:.2f}  ess_a={ess_a_mean:.2f}  dist={dist_mean:.2f}")
 
-                    # Entropy per sample
-                    entropy_pw = None
-                    if ln is not None:
-                        entropy_pw = compute_entropy_per_sample(X, ln, lm_head)
-
-                    # Write one row per sample
-                    for i in range(N):
-                        row = [depth, pos, i, id_twonn]
-                        for k in ks:
-                            row += [
-                                per_k[k]["ess_a_pw"][i],
-                                per_k[k]["ess_b_pw"][i],
-                                per_k[k]["pca_curv_pw"][i],
-                            ]
-                        if entropy_pw is not None:
-                            row.append(entropy_pw[i])
-                        writer.writerow(row)
-
-                    csv_file.flush()
-
-                    # quick summary for stdout
-                    k0 = ks[0]
-                    ess_a_mean = float(np.nanmean(per_k[k0]["ess_a_pw"]))
-                    ess_b_mean = float(np.nanmean(per_k[k0]["ess_b_pw"]))
-                    print(f"  twonn={id_twonn:.2f}  ess_a={ess_a_mean:.2f}  ess_b={ess_b_mean:.2f}")
-
+    pq_meta = {
+        "run_timestamp": datetime.now().isoformat(timespec="seconds"),
+        "h5_file": args.h5_file,
+        "ess_k": str(ks),
+        "ess_d": str(args.ess_d),
+        **{k: str(v) for k, v in meta_attrs.items()},
+    }
+    out_path = resolve_out_path(args.out_parquet)
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    table = pa.Table.from_pandas(pd.DataFrame(all_rows), preserve_index=False)
+    table = table.replace_schema_metadata({**table.schema.metadata, **{k.encode(): v.encode() for k, v in pq_meta.items()}})
+    pq.write_table(table, out_path, compression="zstd")
     print(f"\nSaved: {out_path}")
 
 

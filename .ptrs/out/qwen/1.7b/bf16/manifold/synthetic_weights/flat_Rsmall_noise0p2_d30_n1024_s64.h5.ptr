@@ -1,9 +1,9 @@
 {
   "filename": "flat_Rsmall_noise0p2_d30_n1024_s64.h5",
-  "hash": "40d602b1d8901980eb1d4d7a62db73e5",
-  "size": 13296980300,
-  "mtime": 1777868104.9986527,
-  "uploaded_at": 1777869249.088305,
+  "hash": "6af951a34ce969321157ff38118a2baf",
+  "size": 13290675118,
+  "mtime": 1778037730.265602,
+  "uploaded_at": 1778038865.36446,
   "original_path": "out/qwen/1.7b/bf16/manifold/synthetic_weights/flat_Rsmall_noise0p2_d30_n1024_s64.h5",
   "h5_meta": {
     "ambient_dim": 31,

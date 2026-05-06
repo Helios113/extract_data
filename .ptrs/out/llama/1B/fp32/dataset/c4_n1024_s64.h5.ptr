@@ -1,0 +1,29 @@
+{
+  "filename": "c4_n1024_s64.h5",
+  "hash": "23287ccf0169a14b337453bf1a457395",
+  "size": 3787326590,
+  "mtime": 1778038445.216665,
+  "uploaded_at": 1778038443.222023,
+  "original_path": "out/llama/1B/fp32/dataset/c4_n1024_s64.h5",
+  "h5_meta": {
+    "approx_sigma_probes": 64,
+    "batch_size": 100,
+    "compute_approx_sigma": false,
+    "compute_jacobian_stats": false,
+    "compute_jacobians": false,
+    "d_model": 2048,
+    "dataset_config": "en",
+    "dataset_name": "allenai/c4",
+    "model": "meta-llama/Llama-3.2-1B",
+    "n_layers": 16,
+    "n_samples": 500,
+    "n_tokens": 32000,
+    "seq_len": 64,
+    "source_type": "dataset",
+    "split": "train",
+    "status": "complete",
+    "text_column": "text",
+    "tokenizer": "meta-llama/Llama-3.2-1B",
+    "weights": "real"
+  }
+}

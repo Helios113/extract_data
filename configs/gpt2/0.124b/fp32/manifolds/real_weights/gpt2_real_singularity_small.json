@@ -1,0 +1,19 @@
+{
+  "model": "openai-community/gpt2",
+  "device": "cuda",
+  "weights": "random",
+  "output": "out/gpt2/0.124b/fp32/manifold/real_weights/gpt2_real_singularity_small.h5",
+  "compute_jacobians": false,
+  "wandb": false,
+  "sampling": {
+    "n_samples": 1024,
+    "seq_len": 64,
+    "batch_size": 100
+  },
+  "source": {
+    "type": "flat_plane",
+    "manifold_dim": 8,
+    "seed": 42
+  },
+  "done": true
+}

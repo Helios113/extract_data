@@ -159,6 +159,42 @@ def iter_manifold_batches(
         sample_idx += batch.shape[0]
 
 
+def iter_flat_plane_batches(
+    src: dict, n_samples: int, seq_len: int, batch_size: int, d_model: int, device: str,
+    skip: int = 0,
+) -> Iterator[tuple[int, torch.Tensor, torch.Tensor]]:
+    """
+    Flat d-dimensional plane in R^d_model via torch.rand.
+
+    Points are sampled uniformly in [0,1]^d then projected into R^d_model
+    by a random orthonormal frame.  True intrinsic dimension = d = manifold_dim.
+
+    Source keys:
+      manifold_dim : int   — intrinsic dimension d
+      seed         : int   — RNG seed (default 42)
+    """
+    d    = src["manifold_dim"]
+    seed = src.get("seed", 42)
+
+    gen = torch.Generator()
+    gen.manual_seed(seed)
+
+    # fixed orthonormal frame R^d → R^d_model, shape (d, d_model)
+    frame = _ortho_frame(d, d_model, gen).T  # (d, d_model)
+
+    # all points at once for reproducibility, then slice for resume
+    coords = torch.rand(n_samples * seq_len, d, generator=gen)*1e-6  # (N*T, d)
+    pts    = coords @ frame                                       # (N*T, d_model)
+    seqs   = pts.reshape(n_samples, seq_len, d_model)
+    raw    = coords.reshape(n_samples, seq_len, d)
+
+    print(f"Generating {n_samples} × {seq_len} flat_plane (d={d} → d_model={d_model}) samples ...\n")
+
+    for start in range(skip, n_samples, batch_size):
+        end = min(start + batch_size, n_samples)
+        yield start, seqs[start:end].to(device), raw[start:end]
+
+
 def iter_benchmark_batches(
     src: dict, n_samples: int, seq_len: int, batch_size: int, d_model: int, device: str,
     skip: int = 0,
@@ -233,6 +269,9 @@ def write_meta(
         if lp is not None:
             import json as _json
             meta.attrs["lambda_params"] = _json.dumps(lp)
+    elif src_type == "flat_plane":
+        meta.attrs["manifold_dim"] = src["manifold_dim"]
+        meta.attrs["seed"]         = src.get("seed", 42)
     elif src_type == "random_tokens":
         meta.attrs["seed"]       = src.get("seed", 0)
         meta.attrs["vocab_size"] = src.get("vocab_size", 0)   # 0 = full model vocab
@@ -392,6 +431,7 @@ def main():
     if weights == "random":
         hj.reinit_weights(model)
         print("  weights re-initialised\n")
+    model.eval()
     n_layers  = len(_layers(model))
     sublayers = ("block",) if type(model).__name__ == "GPTNeoXModel" else _SUBLAYERS
     print(f"  {n_layers} layers, d_model={d_model}\n")
@@ -423,12 +463,14 @@ def main():
         batches = iter_manifold_batches(src, n_samples, seq_len, batch_size, d_model, device, skip=skip)
     elif src_type == "benchmark":
         batches = iter_benchmark_batches(src, n_samples, seq_len, batch_size, d_model, device, skip=skip)
+    elif src_type == "flat_plane":
+        batches = iter_flat_plane_batches(src, n_samples, seq_len, batch_size, d_model, device, skip=skip)
     elif src_type == "random_tokens":
         if model is None:
             raise ValueError("source type 'random_tokens' requires a loaded model")
         batches = iter_random_token_batches(src, model, n_samples, seq_len, batch_size, device, skip=skip)
     else:
-        raise ValueError(f"Unknown source type {src_type!r}. Choose: dataset, manifold, benchmark, random_tokens")
+        raise ValueError(f"Unknown source type {src_type!r}. Choose: dataset, manifold, flat_plane, benchmark, random_tokens")
 
     Path(output).parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(output, h5_mode) as f:

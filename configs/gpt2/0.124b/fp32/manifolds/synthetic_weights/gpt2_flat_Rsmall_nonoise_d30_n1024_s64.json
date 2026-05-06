@@ -6,7 +6,7 @@
   "compute_jacobians": false,
   "wandb": false,
   "sampling": {
-    "n_samples": 1024,
+    "n_samples": 500,
     "seq_len": 64,
     "batch_size": 100
   },

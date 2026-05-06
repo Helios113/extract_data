@@ -108,6 +108,7 @@ def _ess_values_batch(
         return torch.full((N,), fill, dtype=torch.float64, device=neighborhoods.device)
 
     vecs = neighborhoods.double() - neighborhoods.double().mean(dim=1, keepdim=True)  # (N, k, D)
+    
 
     all_combs = list(combinations(range(k), p))
     if len(all_combs) > n_groups:
@@ -198,6 +199,31 @@ def _local_pca_curvature(
     return curv.astype(np.float64)
 
 
+def _local_pca_curvature_per_point(
+    neighborhoods: torch.Tensor,
+    id_dims: np.ndarray,
+) -> np.ndarray:
+    """
+    Same as _local_pca_curvature but uses a per-point tangent dimension.
+
+    neighborhoods : (N, k, D)
+    id_dims       : (N,) int array — tangent dim for each point (typically round(ess_a_pw))
+    Returns       : (N,) float64 curvature values in [0, 1]
+    """
+    N, k, D = neighborhoods.shape
+    patches = neighborhoods.double() - neighborhoods.double().mean(dim=1, keepdim=True)
+    sv  = torch.linalg.svdvals(patches)   # (N, min(k, D))
+    var = sv ** 2                          # (N, min(k, D))
+    total = var.sum(dim=-1).cpu().numpy()  # (N,)
+
+    curv = np.empty(N, dtype=np.float64)
+    for i in range(N):
+        d = max(1, min(int(id_dims[i]), D - 1))
+        tangent = float(var[i, :d].sum())
+        curv[i] = (total[i] - tangent) / max(total[i], 1e-30)
+    return curv
+
+
 # ─── ESS public API ───────────────────────────────────────────────────────────
 
 def ess(
@@ -255,6 +281,43 @@ def ess(
         result["curvature_mean"] = float(np.nanmean(curv_pw))
 
     return result
+
+
+def ess_skdim(
+    X: torch.Tensor,
+    k: int = 100,
+    d: int = 1,
+    ver: str = "a",
+    n_jobs: int = 1,
+    seed: int | None = None,
+) -> dict:
+    """
+    ESS via skdim reference implementation, for comparison with ess().
+
+    Returns dict with the same keys as ess() (dimension_pw, essval, dimension).
+    """
+    import skdim
+
+    X_np = X.double().cpu().numpy()
+
+    # Build kNN arrays matching the convention used by ess()
+    dists_t = torch.cdist(X.double(), X.double())
+    dists_t.fill_diagonal_(float("inf"))
+    knn_dists_t, knn_idx_t = dists_t.topk(k, dim=1, largest=False)
+    knn_dists = knn_dists_t.cpu().numpy()
+    knn_idx   = knn_idx_t.cpu().numpy()
+
+    estimator = skdim.id.ESS(ver=ver, d=d, random_state=seed)
+    estimator.fit(X_np, precomputed_knn_arrays=(knn_dists, knn_idx), n_neighbors=k, n_jobs=n_jobs)
+
+    ids    = estimator.dimension_pw_
+    essvals = estimator.essval_
+
+    return {
+        "dimension_pw": ids,
+        "essval": essvals,
+        "dimension": float(np.nanmean(ids)),
+    }
 
 
 def ess_subset(

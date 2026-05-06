@@ -1,0 +1,83 @@
+pa511@mauao:~/code_bases/extract_data$ uv run python scripts/analyze_id.py \
+  out/custom/qwen1B.h5 \
+  results/id_est/custom/qwen_l.csv \
+  --ess-k 25 --no-entropy --pos 10
+File       : out/custom/qwen1B.h5
+N samples  : 128   seq_len : 64
+Depths     : 58   Positions : 1
+k-sweep    : [25]
+Cells      : 58
+
+  [1/58] embed  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=19.75  ess_a=28.27  ess_b=28.06  ess_skdim=28.27  dist=0.00
+  [2/58] layer_0/attn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=46.24  ess_a=122.42  ess_b=121.54  ess_skdim=122.42  dist=3.99
+  [3/58] layer_0/ffn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=62.32  ess_a=122.95  ess_b=121.48  ess_skdim=122.95  dist=0.12
+  [4/58] layer_1/attn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=36.42  ess_a=71.57  ess_b=70.59  ess_skdim=71.57  dist=12.45
+  [5/58] layer_1/ffn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=36.35  ess_a=79.61  ess_b=78.24  ess_skdim=79.61  dist=1.15
+  [6/58] layer_2/attn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=30.87  ess_a=61.15  ess_b=60.04  ess_skdim=61.15  dist=14.94
+  [7/58] layer_2/ffn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=34.23  ess_a=69.89  ess_b=68.52  ess_skdim=69.89  dist=1.99
+  [8/58] layer_3/attn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=29.56  ess_a=53.51  ess_b=52.25  ess_skdim=53.51  dist=19.15
+  [9/58] layer_3/ffn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=30.61  ess_a=56.26  ess_b=54.66  ess_skdim=56.26  dist=4.27
+  [10/58] layer_4/attn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=27.02  ess_a=49.78  ess_b=48.37  ess_skdim=49.78  dist=21.78
+  [11/58] layer_4/ffn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=26.91  ess_a=52.09  ess_b=50.47  ess_skdim=52.09  dist=6.02
+  [12/58] layer_5/attn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=25.54  ess_a=48.42  ess_b=46.64  ess_skdim=48.42  dist=18.99
+  [13/58] layer_5/ffn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=26.26  ess_a=49.92  ess_b=48.12  ess_skdim=49.92  dist=7.78
+  [14/58] layer_6/attn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=23.00  ess_a=47.17  ess_b=45.64  ess_skdim=47.17  dist=21.64
+  [15/58] layer_6/ffn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=23.46  ess_a=48.75  ess_b=47.16  ess_skdim=48.75  dist=9.16
+  [16/58] layer_7/attn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=22.49  ess_a=46.35  ess_b=45.03  ess_skdim=46.35  dist=25.17
+  [17/58] layer_7/ffn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=23.93  ess_a=47.84  ess_b=46.29  ess_skdim=47.84  dist=11.78
+  [18/58] layer_8/attn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=21.37  ess_a=46.10  ess_b=44.63  ess_skdim=46.10  dist=25.20
+  [19/58] layer_8/ffn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=21.83  ess_a=47.26  ess_b=45.64  ess_skdim=47.26  dist=14.30
+  [20/58] layer_9/attn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=20.69  ess_a=45.71  ess_b=44.17  ess_skdim=45.71  dist=25.94
+  [21/58] layer_9/ffn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=21.02  ess_a=46.72  ess_b=45.09  ess_skdim=46.72  dist=17.84
+  [22/58] layer_10/attn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=20.11  ess_a=45.91  ess_b=44.42  ess_skdim=45.91  dist=26.65
+  [23/58] layer_10/ffn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=20.83  ess_a=46.63  ess_b=45.10  ess_skdim=46.63  dist=20.77
+  [24/58] layer_11/attn  pos=10 ...KKN inputs
+torch.Size([128, 2048])
+  twonn=20.74  ess_a=45.04  ess_b=43.55  ess_skdim=45.04  dist=29.74
+  [25/58] layer_11/ffn  pos=10 ...KKN inputs

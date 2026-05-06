@@ -1,0 +1,13 @@
+{
+  "out_dir": "results/id_est/qwen",
+  "ess_k": "25",
+  "runs": [
+    "configs/qwen/1.7b/2bit/manifolds/real_weights/qwen3_1.7b_flat_Rsmall_noise0p2_d30_n1024_s64.json",
+    "configs/qwen/1.7b/4bit/manifolds/real_weights/qwen3_1.7b_flat_Rsmall_noise0p2_d30_n1024_s64.json",
+    "configs/qwen/1.7b/8bit/manifolds/real_weights/qwen3_1.7b_flat_Rsmall_noise0p2_d30_n1024_s64.json",
+    "configs/qwen/0.6b/2bit/manifolds/real_weights/qwen3_0.6b_flat_Rsmall_noise0p2_d30_n1024_s64.json",
+    "configs/qwen/0.6b/2bit/manifolds/real_weights/qwen3_0.6b_flat_Rsmall_noise0p2_d30_n1024_s64.json",
+    "configs/qwen/0.6b/2bit/manifolds/real_weights/qwen3_0.6b_flat_Rsmall_noise0p2_d30_n1024_s64.json"
+
+  ]
+}

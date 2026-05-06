@@ -1,9 +1,9 @@
 {
   "filename": "flat_Rsmall_nonoise_d30_n1024_s64.h5",
-  "hash": "9a9689031649504f72f529d8205b532b",
-  "size": 4977624462,
-  "mtime": 1777978691.732399,
-  "uploaded_at": 1777978691.734651,
+  "hash": "64789a908a9b8c44622f20989b423bb4",
+  "size": 4976953428,
+  "mtime": 1778037192.2345548,
+  "uploaded_at": 1778037607.424836,
   "original_path": "out/gpt2/0.124b/fp32/manifold/real_weights/flat_Rsmall_nonoise_d30_n1024_s64.h5",
   "h5_meta": {
     "ambient_dim": 31,

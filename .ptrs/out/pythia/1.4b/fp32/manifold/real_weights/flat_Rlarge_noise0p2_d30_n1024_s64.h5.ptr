@@ -2,8 +2,8 @@
   "filename": "flat_Rlarge_noise0p2_d30_n1024_s64.h5",
   "hash": "a86f2106ca4fe89c90536ebdee40e137",
   "size": 8600492863,
-  "mtime": 1777873524.0071304,
-  "uploaded_at": 1777874337.835564,
+  "mtime": 1778020435.602078,
+  "uploaded_at": 1778020434.293763,
   "original_path": "out/pythia/1.4b/fp32/manifold/real_weights/flat_Rlarge_noise0p2_d30_n1024_s64.h5",
   "h5_meta": {
     "ambient_dim": 31,

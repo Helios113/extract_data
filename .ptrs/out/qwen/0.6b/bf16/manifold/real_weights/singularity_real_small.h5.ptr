@@ -1,0 +1,26 @@
+{
+  "filename": "singularity_real_small.h5",
+  "hash": "7d1151675d58fdb040eb38a3b1b6b4d3",
+  "size": 6149436707,
+  "mtime": 1778059815.5895486,
+  "uploaded_at": 1778060373.482495,
+  "original_path": "out/qwen/0.6b/bf16/manifold/real_weights/singularity_real_small.h5",
+  "h5_meta": {
+    "approx_sigma_probes": 64,
+    "batch_size": 100,
+    "compute_approx_sigma": false,
+    "compute_jacobian_stats": false,
+    "compute_jacobians": false,
+    "d_model": 1024,
+    "manifold_dim": 8,
+    "model": "Qwen/Qwen3-0.6B",
+    "n_layers": 28,
+    "n_samples": 1024,
+    "n_tokens": 65536,
+    "seed": 42,
+    "seq_len": 64,
+    "source_type": "flat_plane",
+    "status": "complete",
+    "weights": "real"
+  }
+}
