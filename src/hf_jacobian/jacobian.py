@@ -1,5 +1,34 @@
 import torch
+from torch.utils._python_dispatch import TorchDispatchMode
 from transformers import AutoModel, AutoTokenizer
+
+
+class _CaptureAllMode(TorchDispatchMode):
+    """Intercepts every residual `aten.add.Tensor` during a single forward and
+    stores the result keyed by (layer_idx, sublayer). Forward hooks set
+    `pending[id(sublayer_out)] = key` before the add fires; the dispatch
+    intercept matches on that id and saves the add result — the TRUE residual
+    stream value `x + g(LN(x))`, NOT `LN(x + g(LN(x)))` (which is what a
+    pre-hook on the next submodule would give for a pre-LN architecture).
+    """
+    def __init__(self):
+        super().__init__()
+        self.pending: dict[int, tuple] = {}
+        self.store:   dict[tuple, torch.Tensor] = {}
+
+    def __torch_dispatch__(self, func, types, args: tuple = (), kwargs=None):
+        result = func(*args, **(kwargs or {}))
+        if func == torch.ops.aten.add.Tensor:
+            a0 = args[0] if len(args) > 0 else None
+            a1 = args[1] if len(args) > 1 else None
+            id0 = id(a0) if isinstance(a0, torch.Tensor) else None
+            id1 = id(a1) if isinstance(a1, torch.Tensor) else None
+            for tid in (id0, id1):
+                if tid is not None and tid in self.pending:
+                    key = self.pending.pop(tid)
+                    self.store[key] = result.detach().cpu().clone()
+                    break
+        return result
 
 # QuantFactory GGUF repos carry no tokenizer; map to the canonical base model.
 _GGUF_TOKENIZER = {
@@ -43,7 +72,10 @@ def _layers(model):
 
 
 def _sublayer_fn_gpt2(layer, sublayer):
-    torch.backends.cuda.enable_mem_efficient_sdp(False)
+    # NB: do NOT call torch.backends.cuda.enable_mem_efficient_sdp(False) here.
+    # jakub-era gpt2 runs (the published baselines) used the default (mem-eff ON),
+    # and current qwen runs also use the default. Disabling mem-eff only for gpt2
+    # silently shifted gpt2's measured kappa^-1 vs the published baseline.
     if sublayer == "attn":
         def f(x):                              # x: (B, seq, d)
             out = layer.attn(layer.ln_1(x))[0]
@@ -95,8 +127,10 @@ def _sublayer_fn_qwen3(layer, model, sublayer):
 
 
 def _sublayer_fn_pythia(layer, model, sublayer):
-    torch.backends.cuda.enable_mem_efficient_sdp(False)
-    
+    # NB: do NOT call torch.backends.cuda.enable_mem_efficient_sdp(False) here.
+    # See _sublayer_fn_gpt2 for the same reasoning — jakub baselines use the
+    # default (mem-eff ON), and the disable would only break comparability.
+
     # GPT-NeoX uses a parallel residual: x + attn(LN1(x)) + mlp(LN2(x)).
     # Attn and mlp share the same input — there is no separate attn or ffn
     # residual step. Only sublayer="block" is meaningful.
@@ -175,19 +209,23 @@ def capture_all_hidden(
       ("embed",  "out") → embed_out    (B, seq, d)
       ("final",  "out") → final_hidden (B, seq, d)
 
-    Capture strategy (no TorchDispatchMode):
-      - embed_out          : pre-hook on layer 0  → args[0] is the raw residual stream
-      - (i, "attn") out    : pre-hook on ffn mod  → its input is x + attn(LN(x))
-      - (i, "ffn")  out    : post-hook on layer i → output is x + ffn(LN(x))
-      - (i, "block") out   : post-hook on layer i → parallel-residual block output
-      - final_hidden       : post-hook on last layer (same tensor as last ffn out)
+    Capture strategy (TorchDispatchMode — see _CaptureAllMode):
+      Forward hooks on each sublayer submodule write
+      `pending[id(sublayer_output)] = (layer_idx, sublayer)`. The dispatch
+      mode intercepts the very next `aten.add.Tensor` whose operand id
+      matches; the RESULT of that add is the true residual stream value
+      `x + g(LN(x))`. This is the correct residual stream — a pre-hook on
+      the *next* submodule would instead see `LN(x + g(LN(x)))` for pre-LN
+      architectures (gpt2/llama/qwen3/pythia) and silently shift the
+      Jacobian by an LN layer.
 
-    The ffn pre-hook input is the post-attn residual stream (safe: it is x + attn(LN(x)),
-    not a post-LN value — LN is internal to the attn submodule).
+      embed_out: a forward_pre_hook on layer 0 captures the residual
+      entering the first block (pre-LN, so args[0] is already the raw
+      residual — no dispatch interception needed).
     All tensors are returned on CPU.
     """
     layers  = _layers(model)
-    store:  dict[tuple, torch.Tensor] = {}
+    mode    = _CaptureAllMode()
     handles = []
     arch    = type(model).__name__
 
@@ -199,39 +237,39 @@ def capture_all_hidden(
         )
     attn_getter, ffn_getter = _CAPTURE_MODS[arch]
 
-    # embed_out: residual entering block 0
+    # embed_out: residual entering block 0 (raw pre-block stream, pre_hook is correct here)
     def _hook_embed(_mod, args):
-        store[("embed", "out")] = args[0].detach().cpu().clone()
+        mode.store[("embed", "out")] = args[0].detach().cpu().clone()
     handles.append(layers[0].register_forward_pre_hook(_hook_embed))
 
     for i, layer in enumerate(layers):
         if arch == "GPTNeoXModel":
-            # Parallel residual — single block add; layer post-hook captures it
-            def _hook_block(_mod, _inp, out, _i=i):
+            # Parallel residual — single block add; mark the ffn's output id
+            block_mod = ffn_getter(layer)
+            def _mark_block(_mod, _inp, out, _i=i):
                 a = out[0] if isinstance(out, tuple) else out
-                store[(_i, "block")] = a.detach().cpu().clone()
-            handles.append(layer.register_forward_hook(_hook_block))
+                mode.pending[id(a)] = (_i, "block")
+            handles.append(block_mod.register_forward_hook(_mark_block))
         else:
-            # attn out = x + attn(LN(x)) = input to the ffn submodule
-            ffn_mod = ffn_getter(layer)
-            def _hook_attn_out(_mod, args, _i=i):
-                x = args[0] if isinstance(args, tuple) else args
-                store[(_i, "attn")] = x.detach().cpu().clone()
-            handles.append(ffn_mod.register_forward_pre_hook(_hook_attn_out))
-
-            # ffn out = x + ffn(LN(x)) = layer output
-            def _hook_ffn_out(_mod, _inp, out, _i=i):
+            attn_mod = attn_getter(layer)
+            def _mark_attn(_mod, _inp, out, _i=i):
                 a = out[0] if isinstance(out, tuple) else out
-                store[(_i, "ffn")] = a.detach().cpu().clone()
-            handles.append(layer.register_forward_hook(_hook_ffn_out))
+                mode.pending[id(a)] = (_i, "attn")
+            handles.append(attn_mod.register_forward_hook(_mark_attn))
 
-    # final_hidden: same as last layer's post-hook, already registered above
+            ffn_mod = ffn_getter(layer)
+            def _mark_ffn(_mod, _inp, out, _i=i):
+                a = out[0] if isinstance(out, tuple) else out
+                mode.pending[id(a)] = (_i, "ffn")
+            handles.append(ffn_mod.register_forward_hook(_mark_ffn))
+
+    # final_hidden: output of the last block (its post-residual add)
     def _hook_final(_mod, _inp, out):
         a = out[0] if isinstance(out, tuple) else out
-        store[("final", "out")] = a.detach().cpu().clone()
+        mode.store[("final", "out")] = a.detach().cpu().clone()
     handles.append(layers[-1].register_forward_hook(_hook_final))
 
-    with torch.no_grad():
+    with mode, torch.no_grad():
         if inputs.is_floating_point():
             model(inputs_embeds=inputs)
         else:
@@ -240,7 +278,7 @@ def capture_all_hidden(
     for h in handles:
         h.remove()
 
-    return store
+    return mode.store
 
 
 def capture_endpoints(
